@@ -1,15 +1,78 @@
-<!doctype html>
-<html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Editor de calendarios</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Josefin+Sans:wght@400;600&family=Quicksand:wght@500;700&family=Inter:wght@400;600&family=Poppins:wght@400;600&family=Nunito:wght@400;700&family=Work+Sans:wght@400;600&family=Outfit:wght@400;600&family=Caveat:wght@600;700&family=Permanent+Marker&family=Amatic+SC:wght@700&family=Gochi+Hand&family=Shadows+Into+Light&family=Kalam:wght@700&family=Satisfy&family=Homemade+Apple&family=Dancing+Script:wght@600;700&family=Sacramento&family=Pacifico&family=Great+Vibes&family=Playfair+Display:wght@600;700&family=Bodoni+Moda:opsz,wght@6..96,600&family=Abril+Fatface&family=Cormorant+Garamond:wght@600;700&family=DM+Serif+Display&family=Libre+Baskerville:wght@400;700&family=Lora:wght@500;700&family=Prata&family=Marcellus&family=Bebas+Neue&family=Anton&family=Archivo+Black&family=Passion+One:wght@700&family=Alfa+Slab+One&family=Bungee&family=Baloo+2:wght@500;700&family=Comfortaa:wght@500;700&family=Fredoka:wght@500;600&family=Varela+Round&display=swap" rel="stylesheet">
-  </head>
-  <body style="margin:0;">
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>
+:root {
+  --paper: #efe9dc;
+  --paper-2: #e4dcc8;
+  --ink: #2e2a24;
+  --ink-soft: #79705f;
+  --accent: #6e2f44;
+  --line: #d9d0bb;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: var(--paper); color: var(--ink); }
+
+.app { max-width: 1100px; margin: 0 auto; padding: 18px; }
+
+.topbar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.brand { font-family: Georgia, serif; font-style: italic; font-size: 21px; color: var(--accent); }
+.badge { font-size: 11px; color: var(--ink-soft); border: 1px solid var(--line); padding: 3px 8px; border-radius: 999px; }
+
+.workspace { display: flex; flex-direction: column; gap: 16px; }
+@media (min-width: 900px) {
+  .workspace { flex-direction: row; align-items: flex-start; }
+  .toolbar { width: 280px; flex: 0 0 auto; }
+  .canvas-wrap { flex: 1; }
+}
+
+.toolbar { background: var(--paper-2); border-radius: 12px; padding: 16px; }
+.field { margin-bottom: 14px; }
+.label { font-size: 12px; color: var(--ink-soft); margin: 0 0 6px; }
+.hint { font-size: 12px; color: var(--ink-soft); line-height: 1.5; margin-top: 10px; }
+
+button.primary {
+  width: 100%; padding: 10px 12px; border: none; border-radius: 8px;
+  background: var(--accent); color: #fff; font-size: 14px; cursor: pointer;
+}
+select, input[type=text] {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  font-size: 14px; background: #fff; color: var(--ink);
+}
+input[type=color] { width: 44px; height: 32px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+input[type=range] { width: 100%; }
+
+.canvas-wrap { display: flex; justify-content: center; }
+
+.month-tabs { display: flex; gap: 6px; overflow-x: auto; margin-top: 16px; padding: 2px; }
+.month-tab {
+  flex: 0 0 auto; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line);
+  background: #fff; font-size: 12.5px; color: var(--ink-soft); cursor: pointer;
+}
+.month-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.color-picker { position: relative; }
+.color-trigger {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer;
+  font-size: 13px; color: var(--ink); text-align: left;
+}
+.color-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.color-swatch-big { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line); flex: 0 0 auto; }
+.color-panel {
+  margin-top: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: #fff;
+}
+.palette-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+.palette-tab {
+  border: 1px solid var(--line); background: var(--paper); border-radius: 999px;
+  padding: 4px 9px; font-size: 11px; color: var(--ink-soft); cursor: pointer;
+}
+.palette-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.palette-swatches { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.palette-swatch {
+  width: 28px; height: 28px; border-radius: 50%; border: 2px solid #fff;
+  box-shadow: 0 0 0 1px var(--line); cursor: pointer; padding: 0;
+}
+.color-panel-footer { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.eyedropper-btn {
+  border: 1px solid var(--line); background: var(--paper); border-radius: 8px;
+  padding: 6px 10px; font-size: 12px; cursor: pointer; color: var(--ink);
+}
