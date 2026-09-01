@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Transformer, Text as KonvaText, Rect, Line, Shape } from 'react-konva';
+import { Stage, Layer, Group, Image as KonvaImage, Transformer, Text as KonvaText, Rect, Line, Shape } from 'react-konva';
 import useImage from 'use-image';
 
 const STAGE_W = 630;
@@ -163,19 +163,19 @@ function clipForShape(shape, w, h) {
 // redimensionar).
 function PhotoNode({ page, imageUrl, selected, onSelect, onChange, onRequestUpload }) {
   const [img] = useImage(imageUrl || '', 'anonymous');
-  const shapeRef = useRef();
+  const groupRef = useRef();
   const trRef = useRef();
   const hasPhoto = !!(imageUrl && img);
 
   useEffect(() => {
-    if (selected && trRef.current && shapeRef.current) {
-      trRef.current.nodes([shapeRef.current]);
+    if (selected && trRef.current && groupRef.current) {
+      trRef.current.nodes([groupRef.current]);
       trRef.current.getLayer().batchDraw();
     }
   }, [selected, hasPhoto]);
 
   function handleTransformEnd() {
-    const node = shapeRef.current;
+    const node = groupRef.current;
     const scaleX = node.scaleX();
     const scaleY = node.scaleY();
     node.scaleX(1);
@@ -197,43 +197,43 @@ function PhotoNode({ page, imageUrl, selected, onSelect, onChange, onRequestUplo
     if (!hasPhoto && onRequestUpload) onRequestUpload();
   }
 
+  const w = page.photo.width;
+  const h = page.photo.height;
+
+  // Encaja la imagen en modo "cubrir" (como object-fit: cover) dentro del
+  // grupo, y el propio recorte del grupo se encarga de cortar lo que sobre
+  // — así la foto no se estira ni se deforma, se recorta.
+  let imgProps = null;
+  if (hasPhoto) {
+    const coverScale = Math.max(w / img.width, h / img.height);
+    const iw = img.width * coverScale;
+    const ih = img.height * coverScale;
+    imgProps = { x: (w - iw) / 2, y: (h - ih) / 2, width: iw, height: ih };
+  }
+
   return (
     <React.Fragment>
-      {hasPhoto ? (
-        <KonvaImage
-          ref={shapeRef}
-          image={img}
-          x={page.photo.x}
-          y={page.photo.y}
-          width={page.photo.width}
-          height={page.photo.height}
-          rotation={page.photo.rotation}
-          draggable
-          onClick={handleClick}
-          onTap={handleClick}
-          clipFunc={clipForShape(page.photo.shape, page.photo.width, page.photo.height)}
-          onDragEnd={handleDragEnd}
-          onTransformEnd={handleTransformEnd}
-        />
-      ) : (
-        // Placeholder: se puede mover y colocar ANTES de subir foto, como pedisteis.
-        <Rect
-          ref={shapeRef}
-          x={page.photo.x}
-          y={page.photo.y}
-          width={page.photo.width}
-          height={page.photo.height}
-          rotation={page.photo.rotation}
-          fill="#ded6c2"
-          dash={[8, 6]}
-          stroke="#b7ac93"
-          draggable
-          onClick={handleClick}
-          onTap={handleClick}
-          onDragEnd={handleDragEnd}
-          onTransformEnd={handleTransformEnd}
-        />
-      )}
+      <Group
+        ref={groupRef}
+        x={page.photo.x}
+        y={page.photo.y}
+        width={w}
+        height={h}
+        rotation={page.photo.rotation}
+        draggable
+        onClick={handleClick}
+        onTap={handleClick}
+        onDragEnd={handleDragEnd}
+        onTransformEnd={handleTransformEnd}
+        clipFunc={hasPhoto ? clipForShape(page.photo.shape, w, h) : undefined}
+      >
+        {hasPhoto ? (
+          <KonvaImage image={img} x={imgProps.x} y={imgProps.y} width={imgProps.width} height={imgProps.height} />
+        ) : (
+          // Placeholder: se puede mover y colocar ANTES de subir foto, como pedisteis.
+          <Rect x={0} y={0} width={w} height={h} fill="#ded6c2" dash={[8, 6]} stroke="#b7ac93" />
+        )}
+      </Group>
       {selected && (
         <Transformer
           ref={trRef}
@@ -356,6 +356,84 @@ function BackgroundLayer({ page, onDeselect }) {
   );
 }
 
+const PALETTES = [
+  { name: 'Pastel', colors: ['#fbe4e4', '#fde2c8', '#fdf3c8', '#e2f0d9', '#d8e8f0', '#e6dcf0'] },
+  { name: 'Neón', colors: ['#ff2d55', '#ff9500', '#ffe600', '#39ff14', '#00e5ff', '#d400ff'] },
+  { name: 'Metálico', colors: ['#c9a86a', '#b8b8b8', '#8c7853', '#d4af37', '#a8a9ad', '#704214'] },
+  { name: 'Tierra', colors: ['#7c6a4f', '#a67c52', '#c9ada7', '#6b705c', '#b7b7a4', '#ffe8d6'] },
+  { name: 'Vintage', colors: ['#eae2b7', '#f4a261', '#e76f51', '#2a9d8f', '#264653', '#e9c46a'] },
+  { name: 'Mono', colors: ['#0a0a0a', '#3a3a3a', '#6b6b6b', '#a0a0a0', '#d4d4d4', '#ffffff'] },
+];
+
+// Selector de color propio: paletas preestablecidas + selector RGB completo
+// (reutiliza el input nativo solo para eso, ya que hacer un selector RGB
+// entero a mano añade mucho riesgo sin poder probarlo) + pipeta con la
+// EyeDropper API del navegador cuando está disponible.
+function ColorPicker({ label, value, onChange, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [activePalette, setActivePalette] = useState(0);
+  const supportsEyedropper = typeof window !== 'undefined' && 'EyeDropper' in window;
+
+  async function pickWithEyedropper() {
+    try {
+      const dropper = new window.EyeDropper();
+      const result = await dropper.open();
+      onChange(result.sRGBHex);
+    } catch (err) {
+      // el usuario canceló la pipeta, no hay que hacer nada
+    }
+  }
+
+  return (
+    <div className="color-picker">
+      <button
+        type="button"
+        className="color-trigger"
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="color-swatch-big" style={{ background: value }} />
+        <span>{label}</span>
+      </button>
+      {open && !disabled && (
+        <div className="color-panel">
+          <div className="palette-tabs">
+            {PALETTES.map((p, i) => (
+              <button
+                type="button"
+                key={p.name}
+                className={'palette-tab' + (i === activePalette ? ' active' : '')}
+                onClick={() => setActivePalette(i)}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+          <div className="palette-swatches">
+            {PALETTES[activePalette].colors.map((c) => (
+              <button
+                type="button"
+                key={c}
+                className="palette-swatch"
+                style={{ background: c }}
+                onClick={() => onChange(c)}
+              />
+            ))}
+          </div>
+          <div className="color-panel-footer">
+            <input type="color" value={value} onChange={(e) => onChange(e.target.value)} />
+            {supportsEyedropper && (
+              <button type="button" className="eyedropper-btn" onClick={pickWithEyedropper}>
+                🎨 Pipeta
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const App = () => {
   const [pages, setPages] = useState(() => Array.from({ length: 12 }, (_, i) => makeDefaultPage(i)));
   const [current, setCurrent] = useState(0);
@@ -461,12 +539,10 @@ export const App = () => {
             <input type="range" min="16" max="64" value={page.title.fontSize} onChange={(e) => updateTitleField('fontSize', +e.target.value)} />
           </div>
           <div className="field">
-            <p className="label">Color del título</p>
-            <input type="color" value={page.title.color} onChange={(e) => updateTitleField('color', e.target.value)} />
+            <ColorPicker label="Color del título" value={page.title.color} onChange={(c) => updateTitleField('color', c)} />
           </div>
           <div className="field">
-            <p className="label">Fondo de la página</p>
-            <input type="color" value={page.bg} onChange={(e) => updatePageField('bg', e.target.value)} disabled={!!page.bgPhotoUrl} />
+            <ColorPicker label="Color de fondo" value={page.bg} onChange={(c) => updatePageField('bg', c)} disabled={!!page.bgPhotoUrl} />
             <select
               style={{ marginTop: 8 }}
               value={page.bgPattern}
@@ -497,12 +573,10 @@ export const App = () => {
             </select>
           </div>
           <div className="field">
-            <p className="label">Color de los números</p>
-            <input type="color" value={page.gridColor} onChange={(e) => updatePageField('gridColor', e.target.value)} />
+            <ColorPicker label="Color de los números" value={page.gridColor} onChange={(c) => updatePageField('gridColor', c)} />
           </div>
           <div className="field">
-            <p className="label">Color de las líneas</p>
-            <input type="color" value={page.gridLineColor} onChange={(e) => updatePageField('gridLineColor', e.target.value)} />
+            <ColorPicker label="Color de las líneas" value={page.gridLineColor} onChange={(c) => updatePageField('gridLineColor', c)} />
           </div>
           <p className="hint">
             Toca la foto o el título para seleccionarlos. Arrastra para mover; con la foto
