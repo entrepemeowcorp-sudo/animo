@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Transformer, Text as KonvaText, Rect } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Transformer, Text as KonvaText, Rect, Line } from 'react-konva';
 import useImage from 'use-image';
 
 const STAGE_W = 630;
@@ -12,12 +12,42 @@ function shapeLabel(id) {
   return { rect: 'Rectangular', rounded: 'Redondeado', oval: 'Óvalo', star: 'Estrella', heart: 'Corazón', postit: 'Post-it' }[id] || id;
 }
 
+const YEAR = 2027;
+const WEEKDAYS_MON = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
+const GRID_MARGIN = 24;
+
+function daysInfo(monthIdx) {
+  const firstDate = new Date(YEAR, monthIdx, 1);
+  const firstWeekday = (firstDate.getDay() + 6) % 7; // 0 = lunes
+  const numDays = new Date(YEAR, monthIdx + 1, 0).getDate();
+  return { firstWeekday, numDays };
+}
+
+// Calcula dónde empieza la cuadrícula según lo que ocupen la foto y el
+// título ahora mismo — esto es lo que la hace "adaptativa" de verdad en vez
+// de solo desplazarse hacia abajo: recalcula la altura de cada fila para que
+// quepa en el espacio que quede, no un bloque de tamaño fijo que se corta.
+function computeGridLayout(page) {
+  const left = GRID_MARGIN;
+  const width = STAGE_W - GRID_MARGIN * 2;
+  const photoBottom = page.photo.y + page.photo.height;
+  const titleBottom = page.title.y + page.title.fontSize * 1.3;
+  let top = Math.max(photoBottom, titleBottom) + 14;
+  const bottom = STAGE_H - 14;
+  top = Math.min(top, bottom - 70); // deja como mínimo ~70px para la cuadrícula
+  const height = Math.max(50, bottom - top);
+  return { left, top, width, height };
+}
+
 function makeDefaultPage(i) {
   return {
     photoUrl: null,
     photo: { x: 220, y: 30, width: 360, height: 170, rotation: 0, shape: 'rounded' },
     title: { text: MONTHS[i], x: 30, y: 30, fontSize: 32, color: '#2e2a24' },
     bg: '#fbf7ef',
+    gridStyle: 'lines', // 'lines' | 'minimal'
+    gridColor: '#2e2a24', // color de los números
+    gridLineColor: '#c9c0aa', // color de las líneas separadoras y los días de la semana
   };
 }
 
@@ -166,6 +196,78 @@ function PhotoNode({ page, imageUrl, selected, onSelect, onChange, onRequestUplo
   );
 }
 
+// --- Cuadrícula de días: centrada de verdad y con su tamaño de fila
+// recalculado en cada render según el espacio disponible (computeGridLayout) ---
+function CalendarGrid({ monthIdx, page }) {
+  const layout = computeGridLayout(page);
+  const { firstWeekday, numDays } = daysInfo(monthIdx);
+  const cols = 7;
+  const totalCells = firstWeekday + numDays;
+  const rows = Math.ceil(totalCells / cols);
+  const colW = layout.width / cols;
+  const headerH = Math.min(18, layout.height * 0.15);
+  const bodyTop = layout.top + headerH;
+  const bodyHeight = layout.height - headerH;
+  const rowH = bodyHeight / rows;
+
+  const weekdayLabels = WEEKDAYS_MON.map((wd, i) => (
+    <KonvaText
+      key={'wd' + i}
+      text={wd}
+      x={layout.left + i * colW}
+      y={layout.top}
+      width={colW}
+      align="center"
+      fontSize={Math.max(8, headerH * 0.7)}
+      fill={page.gridLineColor}
+    />
+  ));
+
+  const dayNumbers = [];
+  for (let d = 1; d <= numDays; d++) {
+    const cellIndex = firstWeekday + d - 1;
+    const row = Math.floor(cellIndex / cols);
+    const col = cellIndex % cols;
+    const cellX = layout.left + col * colW;
+    const cellY = bodyTop + row * rowH;
+    const fontSize = Math.max(8, Math.min(14, rowH * 0.4));
+    dayNumbers.push(
+      <KonvaText
+        key={'d' + d}
+        text={String(d)}
+        x={cellX}
+        y={cellY + rowH / 2 - fontSize / 2} // centrado vertical real dentro de la fila
+        width={colW}
+        align="center" // centrado horizontal real dentro de la columna
+        fontSize={fontSize}
+        fill={page.gridColor}
+      />
+    );
+  }
+
+  const separators = [];
+  if (page.gridStyle === 'lines') {
+    for (let r = 1; r < rows; r++) {
+      separators.push(
+        <Line
+          key={'ln' + r}
+          points={[layout.left, bodyTop + r * rowH, layout.left + layout.width, bodyTop + r * rowH]}
+          stroke={page.gridLineColor}
+          strokeWidth={1}
+        />
+      );
+    }
+  }
+
+  return (
+    <React.Fragment>
+      {separators}
+      {weekdayLabels}
+      {dayNumbers}
+    </React.Fragment>
+  );
+}
+
 export const App = () => {
   const [pages, setPages] = useState(() => Array.from({ length: 12 }, (_, i) => makeDefaultPage(i)));
   const [current, setCurrent] = useState(0);
@@ -269,6 +371,21 @@ export const App = () => {
             <p className="label">Fondo de la página</p>
             <input type="color" value={page.bg} onChange={(e) => updatePageField('bg', e.target.value)} />
           </div>
+          <div className="field">
+            <p className="label">Estilo de cuadrícula</p>
+            <select value={page.gridStyle} onChange={(e) => updatePageField('gridStyle', e.target.value)}>
+              <option value="lines">Líneas</option>
+              <option value="minimal">Minimal</option>
+            </select>
+          </div>
+          <div className="field">
+            <p className="label">Color de los números</p>
+            <input type="color" value={page.gridColor} onChange={(e) => updatePageField('gridColor', e.target.value)} />
+          </div>
+          <div className="field">
+            <p className="label">Color de las líneas</p>
+            <input type="color" value={page.gridLineColor} onChange={(e) => updatePageField('gridLineColor', e.target.value)} />
+          </div>
           <p className="hint">
             Toca la foto o el título para seleccionarlos. Arrastra para mover; con la foto
             seleccionada, usa las esquinas para redimensionar o girar.
@@ -327,6 +444,7 @@ export const App = () => {
                     draggable
                     onDragEnd={handleTitleDragEnd}
                   />
+                  <CalendarGrid monthIdx={current} page={page} />
                 </Layer>
               </Stage>
             </div>
