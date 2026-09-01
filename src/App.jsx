@@ -6,10 +6,13 @@ const STAGE_W = 630;
 const STAGE_H = 443; // proporción A5 apaisado (210:148)
 
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-const SHAPES = ['rect', 'rounded', 'oval', 'star', 'heart', 'postit'];
+const SHAPES = ['rect', 'rounded', 'oval', 'star', 'heart', 'postit', 'diamond', 'hexagon', 'arch', 'cloud'];
 
 function shapeLabel(id) {
-  return { rect: 'Rectangular', rounded: 'Redondeado', oval: 'Óvalo', star: 'Estrella', heart: 'Corazón', postit: 'Post-it' }[id] || id;
+  return {
+    rect: 'Rectangular', rounded: 'Redondeado', oval: 'Óvalo', star: 'Estrella', heart: 'Corazón',
+    postit: 'Post-it', diamond: 'Diamante', hexagon: 'Hexágono', arch: 'Arco', cloud: 'Nube',
+  }[id] || id;
 }
 
 const YEAR = 2027;
@@ -73,31 +76,62 @@ function daysInfo(monthIdx) {
   return { firstWeekday, numDays };
 }
 
-// Calcula dónde empieza la cuadrícula según lo que ocupen la foto y el
-// título ahora mismo — esto es lo que la hace "adaptativa" de verdad en vez
-// de solo desplazarse hacia abajo: recalcula la altura de cada fila para que
-// quepa en el espacio que quede, no un bloque de tamaño fijo que se corta.
-function computeGridLayout(page) {
-  const left = GRID_MARGIN;
-  const width = STAGE_W - GRID_MARGIN * 2;
-  const photoBottom = page.photo.y + page.photo.height;
-  const titleBottom = page.title.y + page.title.fontSize * 1.3;
-  let top = Math.max(photoBottom, titleBottom) + 14;
-  const bottom = STAGE_H - 14;
-  top = Math.min(top, bottom - 70); // deja como mínimo ~70px para la cuadrícula
-  const height = Math.max(50, bottom - top);
-  return { left, top, width, height };
+// Mide cuánto ocupa el título de verdad (con su fuente y tamaño reales) para
+// poder tratarlo como un obstáculo más a la hora de calcular el hueco libre.
+function measureTextWidth(text, fontSize, fontFamily) {
+  if (typeof document === 'undefined') return text.length * fontSize * 0.55;
+  const canvas = measureTextWidth._canvas || (measureTextWidth._canvas = document.createElement('canvas'));
+  const ctx = canvas.getContext('2d');
+  ctx.font = `${fontSize}px ${fontFamily}`;
+  return ctx.measureText(text).width;
+}
+
+// Layout 2D de verdad: junta la foto y el título en un único rectángulo
+// "ocupado", calcula las cuatro franjas libres posibles alrededor de ese
+// rectángulo (encima, debajo, izquierda, derecha) y elige la de mayor área.
+// Así, si pones la foto a un lado, la cuadrícula ocupa el otro lado entero
+// — no se limita a encogerse verticalmente.
+function computeGridLayout(page, titleFontFamily) {
+  const contentLeft = GRID_MARGIN;
+  const contentTop = GRID_MARGIN;
+  const contentRight = STAGE_W - GRID_MARGIN;
+  const contentBottom = STAGE_H - GRID_MARGIN;
+
+  const titleWidth = measureTextWidth(page.title.text || ' ', page.title.fontSize, titleFontFamily || 'sans-serif');
+  const obsLeft = Math.min(page.photo.x, page.title.x);
+  const obsTop = Math.min(page.photo.y, page.title.y);
+  const obsRight = Math.max(page.photo.x + page.photo.width, page.title.x + titleWidth);
+  const obsBottom = Math.max(page.photo.y + page.photo.height, page.title.y + page.title.fontSize * 1.3);
+
+  const gap = 12;
+  const raw = [
+    { left: contentLeft, top: contentTop, right: contentRight, bottom: obsTop - gap }, // encima
+    { left: contentLeft, top: obsBottom + gap, right: contentRight, bottom: contentBottom }, // debajo
+    { left: contentLeft, top: contentTop, right: obsLeft - gap, bottom: contentBottom }, // izquierda
+    { left: obsRight + gap, top: contentTop, right: contentRight, bottom: contentBottom }, // derecha
+  ];
+  const candidates = raw
+    .map((r) => ({ left: r.left, top: r.top, width: r.right - r.left, height: r.bottom - r.top }))
+    .filter((r) => r.width > 70 && r.height > 60);
+
+  if (candidates.length === 0) {
+    // No cabe limpiamente en ningún lado: usa la franja de abajo aunque quede apretada.
+    const top = Math.min(obsBottom + gap, contentBottom - 60);
+    return { left: contentLeft, top, width: contentRight - contentLeft, height: Math.max(50, contentBottom - top) };
+  }
+  candidates.sort((a, b) => b.width * b.height - a.width * a.height);
+  return candidates[0];
 }
 
 function makeDefaultPage(i) {
   return {
     photoUrl: null,
     photo: { x: 220, y: 30, width: 360, height: 170, rotation: 0, shape: 'rounded' },
-    title: { text: MONTHS[i], x: 30, y: 30, fontSize: 32, color: '#2e2a24' },
+    title: { text: MONTHS[i], x: 30, y: 30, fontSize: 32, color: '#2e2a24', font: 'space' },
     bg: '#fbf7ef',
     bgPattern: 'liso', // 'liso' | 'cuadros' | 'lunares' | 'rayas'
     bgPhotoUrl: null,
-    gridStyle: 'lines', // 'lines' | 'minimal'
+    gridStyle: 'lines', // 'lines' | 'minimal' | 'boxed' | 'dots' | 'circles' | 'cards'
     gridColor: '#2e2a24', // color de los números
     gridLineColor: '#c9c0aa', // color de las líneas separadoras y los días de la semana
   };
@@ -147,6 +181,42 @@ function clipForShape(shape, w, h) {
       ctx.bezierCurveTo(w * 0.1, h * 0.6, w * 0.35, h * 0.78, w / 2, h * 0.98);
       ctx.bezierCurveTo(w * 0.65, h * 0.78, w * 0.9, h * 0.6, w * 0.9, h * 0.35);
       ctx.bezierCurveTo(w * 0.9, h * 0.05, w * 0.6, h * 0.05, w / 2, h * 0.28);
+      ctx.closePath();
+    } else if (shape === 'diamond') {
+      ctx.beginPath();
+      ctx.moveTo(w / 2, 0);
+      ctx.lineTo(w, h / 2);
+      ctx.lineTo(w / 2, h);
+      ctx.lineTo(0, h / 2);
+      ctx.closePath();
+    } else if (shape === 'hexagon') {
+      const cx = w / 2, cy = h / 2;
+      const r = Math.min(w, h) / 2;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const angle = (i * Math.PI) / 3 - Math.PI / 2;
+        const x = cx + r * Math.cos(angle) * (w >= h ? w / Math.min(w, h) : 1);
+        const y = cy + r * Math.sin(angle) * (h > w ? h / Math.min(w, h) : 1);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+    } else if (shape === 'arch') {
+      const r = Math.min(w / 2, h * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      ctx.lineTo(0, r);
+      ctx.arc(w / 2, r, r, Math.PI, 0, false);
+      ctx.lineTo(w, h);
+      ctx.closePath();
+    } else if (shape === 'cloud') {
+      ctx.beginPath();
+      ctx.ellipse(w * 0.24, h * 0.62, w * 0.22, h * 0.36, 0, 0, Math.PI * 2);
+      ctx.moveTo(w * 0.62, h * 0.78);
+      ctx.ellipse(w * 0.5, h * 0.55, w * 0.26, h * 0.42, 0, 0, Math.PI * 2);
+      ctx.moveTo(w * 0.98, h * 0.68);
+      ctx.ellipse(w * 0.76, h * 0.64, w * 0.22, h * 0.32, 0, 0, Math.PI * 2);
+      ctx.rect(w * 0.1, h * 0.55, w * 0.8, h * 0.42);
       ctx.closePath();
     } else {
       // rect / postit: sin recorte, el rectángulo entero
@@ -248,10 +318,10 @@ function PhotoNode({ page, imageUrl, selected, onSelect, onChange, onRequestUplo
   );
 }
 
-// --- Cuadrícula de días: centrada de verdad y con su tamaño de fila
-// recalculado en cada render según el espacio disponible (computeGridLayout) ---
-function CalendarGrid({ monthIdx, page }) {
-  const layout = computeGridLayout(page);
+// --- Cuadrícula de días: centrada de verdad, con su tamaño recalculado según
+// el hueco libre real (computeGridLayout) y varios estilos ---
+function CalendarGrid({ monthIdx, page, titleFontFamily }) {
+  const layout = computeGridLayout(page, titleFontFamily);
   const { firstWeekday, numDays } = daysInfo(monthIdx);
   const cols = 7;
   const totalCells = firstWeekday + numDays;
@@ -261,6 +331,7 @@ function CalendarGrid({ monthIdx, page }) {
   const bodyTop = layout.top + headerH;
   const bodyHeight = layout.height - headerH;
   const rowH = bodyHeight / rows;
+  const style = page.gridStyle;
 
   const weekdayLabels = WEEKDAYS_MON.map((wd, i) => (
     <KonvaText
@@ -276,13 +347,38 @@ function CalendarGrid({ monthIdx, page }) {
   ));
 
   const dayNumbers = [];
+  const badges = [];
   for (let d = 1; d <= numDays; d++) {
     const cellIndex = firstWeekday + d - 1;
     const row = Math.floor(cellIndex / cols);
     const col = cellIndex % cols;
     const cellX = layout.left + col * colW;
     const cellY = bodyTop + row * rowH;
+    const cellCenterX = cellX + colW / 2;
+    const cellCenterY = cellY + rowH / 2;
     const fontSize = Math.max(8, Math.min(14, rowH * 0.4));
+
+    if (style === 'circles') {
+      const radius = Math.min(colW, rowH) * 0.32;
+      badges.push(
+        <React.Fragment key={'badge' + d}>
+          <Rect
+            x={cellCenterX - radius} y={cellCenterY - radius} width={radius * 2} height={radius * 2}
+            cornerRadius={radius} stroke={page.gridLineColor} strokeWidth={1}
+          />
+        </React.Fragment>
+      );
+    }
+    if (style === 'cards') {
+      badges.push(
+        <Rect
+          key={'card' + d}
+          x={cellX + 2} y={cellY + 2} width={colW - 4} height={rowH - 4}
+          cornerRadius={4} fill={page.gridLineColor} opacity={0.12}
+        />
+      );
+    }
+
     dayNumbers.push(
       <KonvaText
         key={'d' + d}
@@ -298,7 +394,7 @@ function CalendarGrid({ monthIdx, page }) {
   }
 
   const separators = [];
-  if (page.gridStyle === 'lines') {
+  if (style === 'lines' || style === 'dots') {
     for (let r = 1; r < rows; r++) {
       separators.push(
         <Line
@@ -306,13 +402,27 @@ function CalendarGrid({ monthIdx, page }) {
           points={[layout.left, bodyTop + r * rowH, layout.left + layout.width, bodyTop + r * rowH]}
           stroke={page.gridLineColor}
           strokeWidth={1}
+          dash={style === 'dots' ? [1, 5] : undefined}
         />
+      );
+    }
+  }
+  if (style === 'boxed') {
+    for (let r = 1; r < rows; r++) {
+      separators.push(
+        <Line key={'hln' + r} points={[layout.left, bodyTop + r * rowH, layout.left + layout.width, bodyTop + r * rowH]} stroke={page.gridLineColor} strokeWidth={1} />
+      );
+    }
+    for (let c = 1; c < cols; c++) {
+      separators.push(
+        <Line key={'vln' + c} points={[layout.left + c * colW, bodyTop, layout.left + c * colW, bodyTop + bodyHeight]} stroke={page.gridLineColor} strokeWidth={1} />
       );
     }
   }
 
   return (
     <React.Fragment>
+      {badges}
       {separators}
       {weekdayLabels}
       {dayNumbers}
@@ -434,6 +544,91 @@ function ColorPicker({ label, value, onChange, disabled }) {
   );
 }
 
+// Lista amplia de Google Fonts, agrupada por estilo. Se cargan todas de una
+// vez en index.html; aquí solo se listan para el selector. El navegador no
+// descarga el archivo de una fuente hasta que algo la usa de verdad, así que
+// tenerlas todas listadas no penaliza la carga inicial de la página.
+const FONTS = [
+  { id: 'space', label: 'Space Grotesk', family: "'Space Grotesk', sans-serif", group: 'Limpias' },
+  { id: 'josefin', label: 'Josefin Sans', family: "'Josefin Sans', sans-serif", group: 'Limpias' },
+  { id: 'quicksand', label: 'Quicksand', family: "'Quicksand', sans-serif", group: 'Limpias' },
+  { id: 'inter', label: 'Inter', family: "'Inter', sans-serif", group: 'Limpias' },
+  { id: 'poppins', label: 'Poppins', family: "'Poppins', sans-serif", group: 'Limpias' },
+  { id: 'nunito', label: 'Nunito', family: "'Nunito', sans-serif", group: 'Limpias' },
+  { id: 'worksans', label: 'Work Sans', family: "'Work Sans', sans-serif", group: 'Limpias' },
+  { id: 'outfit', label: 'Outfit', family: "'Outfit', sans-serif", group: 'Limpias' },
+  { id: 'caveat', label: 'Caveat', family: "'Caveat', cursive", group: 'Manuscritas' },
+  { id: 'marker', label: 'Permanent Marker', family: "'Permanent Marker', cursive", group: 'Manuscritas' },
+  { id: 'amatic', label: 'Amatic SC', family: "'Amatic SC', cursive", group: 'Manuscritas' },
+  { id: 'gochi', label: 'Gochi Hand', family: "'Gochi Hand', cursive", group: 'Manuscritas' },
+  { id: 'shadows', label: 'Shadows Into Light', family: "'Shadows Into Light', cursive", group: 'Manuscritas' },
+  { id: 'kalam', label: 'Kalam', family: "'Kalam', cursive", group: 'Manuscritas' },
+  { id: 'satisfy', label: 'Satisfy', family: "'Satisfy', cursive", group: 'Manuscritas' },
+  { id: 'homemade', label: 'Homemade Apple', family: "'Homemade Apple', cursive", group: 'Manuscritas' },
+  { id: 'dancing', label: 'Dancing Script', family: "'Dancing Script', cursive", group: 'Script' },
+  { id: 'sacramento', label: 'Sacramento', family: "'Sacramento', cursive", group: 'Script' },
+  { id: 'pacifico', label: 'Pacifico', family: "'Pacifico', cursive", group: 'Script' },
+  { id: 'vibes', label: 'Great Vibes', family: "'Great Vibes', cursive", group: 'Script' },
+  { id: 'playfair', label: 'Playfair Display', family: "'Playfair Display', serif", group: 'Moda / editorial' },
+  { id: 'bodoni', label: 'Bodoni Moda', family: "'Bodoni Moda', serif", group: 'Moda / editorial' },
+  { id: 'abril', label: 'Abril Fatface', family: "'Abril Fatface', serif", group: 'Moda / editorial' },
+  { id: 'cormorant', label: 'Cormorant Garamond', family: "'Cormorant Garamond', serif", group: 'Moda / editorial' },
+  { id: 'dmserif', label: 'DM Serif Display', family: "'DM Serif Display', serif", group: 'Moda / editorial' },
+  { id: 'libre', label: 'Libre Baskerville', family: "'Libre Baskerville', serif", group: 'Moda / editorial' },
+  { id: 'lora', label: 'Lora', family: "'Lora', serif", group: 'Moda / editorial' },
+  { id: 'prata', label: 'Prata', family: "'Prata', serif", group: 'Moda / editorial' },
+  { id: 'marcellus', label: 'Marcellus', family: "'Marcellus', serif", group: 'Moda / editorial' },
+  { id: 'bebas', label: 'Bebas Neue', family: "'Bebas Neue', sans-serif", group: 'Display' },
+  { id: 'anton', label: 'Anton', family: "'Anton', sans-serif", group: 'Display' },
+  { id: 'archivo', label: 'Archivo Black', family: "'Archivo Black', sans-serif", group: 'Display' },
+  { id: 'passion', label: 'Passion One', family: "'Passion One', sans-serif", group: 'Display' },
+  { id: 'alfa', label: 'Alfa Slab One', family: "'Alfa Slab One', sans-serif", group: 'Display' },
+  { id: 'bungee', label: 'Bungee', family: "'Bungee', sans-serif", group: 'Display' },
+  { id: 'baloo', label: 'Baloo 2', family: "'Baloo 2', sans-serif", group: 'Redondeadas' },
+  { id: 'comfortaa', label: 'Comfortaa', family: "'Comfortaa', sans-serif", group: 'Redondeadas' },
+  { id: 'fredoka', label: 'Fredoka', family: "'Fredoka', sans-serif", group: 'Redondeadas' },
+  { id: 'varela', label: 'Varela Round', family: "'Varela Round', sans-serif", group: 'Redondeadas' },
+];
+function fontFamilyFor(id) {
+  const f = FONTS.find((x) => x.id === id);
+  return f ? f.family : "'Space Grotesk', sans-serif";
+}
+
+// Selector de fuente con buscador — con ~35 opciones un <select> plano ya
+// cuesta de recorrer, así que se puede filtrar escribiendo.
+function FontPicker({ value, onChange }) {
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const filtered = q ? FONTS.filter((f) => f.label.toLowerCase().includes(q) || f.group.toLowerCase().includes(q)) : FONTS;
+  const groups = [];
+  const seen = {};
+  filtered.forEach((f) => {
+    if (!seen[f.group]) { seen[f.group] = []; groups.push(f.group); }
+    seen[f.group].push(f);
+  });
+
+  return (
+    <div>
+      <input
+        type="text"
+        placeholder="Buscar tipografía…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        style={{ marginBottom: 6 }}
+      />
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {groups.map((g) => (
+          <optgroup key={g} label={g}>
+            {seen[g].map((f) => (
+              <option key={f.id} value={f.id} style={{ fontFamily: f.family }}>{f.label}</option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 export const App = () => {
   const [pages, setPages] = useState(() => Array.from({ length: 12 }, (_, i) => makeDefaultPage(i)));
   const [current, setCurrent] = useState(0);
@@ -474,6 +669,16 @@ export const App = () => {
     });
   }
   function updateTitleField(field, value) {
+    if (field === 'font' && typeof document !== 'undefined' && document.fonts) {
+      // Canvas no espera solo a que el fichero de la fuente termine de
+      // cargar como sí hace el texto normal — si no se fuerza, la primera
+      // vez que eliges una tipografía puede pintarse con la de repuesto
+      // hasta el siguiente redibujado. document.fonts.load() lo evita.
+      const family = fontFamilyFor(value).split(',')[0].replace(/'/g, '');
+      document.fonts.load(`16px "${family}"`).then(() => {
+        setPages((prev) => [...prev]); // fuerza un redibujado una vez cargada de verdad
+      }).catch(() => {});
+    }
     setPages((prev) => {
       const copy = [...prev];
       copy[current] = { ...copy[current], title: { ...copy[current].title, [field]: value } };
@@ -535,6 +740,10 @@ export const App = () => {
             <input type="text" value={page.title.text} onChange={(e) => updateTitleField('text', e.target.value)} />
           </div>
           <div className="field">
+            <p className="label">Tipografía del título</p>
+            <FontPicker value={page.title.font} onChange={(v) => updateTitleField('font', v)} />
+          </div>
+          <div className="field">
             <p className="label">Tamaño del título</p>
             <input type="range" min="16" max="64" value={page.title.fontSize} onChange={(e) => updateTitleField('fontSize', +e.target.value)} />
           </div>
@@ -570,6 +779,10 @@ export const App = () => {
             <select value={page.gridStyle} onChange={(e) => updatePageField('gridStyle', e.target.value)}>
               <option value="lines">Líneas</option>
               <option value="minimal">Minimal</option>
+              <option value="boxed">Recuadros</option>
+              <option value="dots">Puntos</option>
+              <option value="circles">Círculos</option>
+              <option value="cards">Tarjetas</option>
             </select>
           </div>
           <div className="field">
@@ -625,13 +838,15 @@ export const App = () => {
                     text={page.title.text}
                     x={page.title.x}
                     y={page.title.y}
+                    width={STAGE_W - page.title.x - GRID_MARGIN}
+                    wrap="word"
                     fontSize={page.title.fontSize}
                     fill={page.title.color}
-                    fontFamily="Georgia, serif"
+                    fontFamily={fontFamilyFor(page.title.font)}
                     draggable
                     onDragEnd={handleTitleDragEnd}
                   />
-                  <CalendarGrid monthIdx={current} page={page} />
+                  <CalendarGrid monthIdx={current} page={page} titleFontFamily={fontFamilyFor(page.title.font)} />
                 </Layer>
               </Stage>
             </div>
