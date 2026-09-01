@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Stage, Layer, Image as KonvaImage, Transformer, Text as KonvaText, Rect, Line } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Transformer, Text as KonvaText, Rect, Line, Shape } from 'react-konva';
 import useImage from 'use-image';
 
 const STAGE_W = 630;
@@ -15,6 +15,56 @@ function shapeLabel(id) {
 const YEAR = 2027;
 const WEEKDAYS_MON = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
 const GRID_MARGIN = 24;
+
+function isDark(hex) {
+  const c = hex.replace('#', '');
+  const r = parseInt(c.substring(0, 2), 16), g = parseInt(c.substring(2, 4), 16), b = parseInt(c.substring(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 < 0.5;
+}
+
+// Dibuja el patrón directamente sobre el contexto del canvas — Konva no trae
+// "patrones de fondo" hechos, así que se pintan a mano igual que se haría en
+// un <canvas> normal.
+function drawPattern(ctx, pattern, color, w, h) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1;
+  if (pattern === 'cuadros') {
+    const step = 26;
+    for (let x = 0; x <= w; x += step) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= h; y += step) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+  } else if (pattern === 'lunares') {
+    const step = 24;
+    for (let y = step / 2; y < h; y += step) {
+      for (let x = step / 2; x < w; x += step) {
+        ctx.beginPath();
+        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (pattern === 'rayas') {
+    const step = 18;
+    const diag = w + h;
+    for (let offset = -h; offset < diag; offset += step) {
+      ctx.beginPath();
+      ctx.moveTo(offset, 0);
+      ctx.lineTo(offset + h, h);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
 
 function daysInfo(monthIdx) {
   const firstDate = new Date(YEAR, monthIdx, 1);
@@ -45,6 +95,8 @@ function makeDefaultPage(i) {
     photo: { x: 220, y: 30, width: 360, height: 170, rotation: 0, shape: 'rounded' },
     title: { text: MONTHS[i], x: 30, y: 30, fontSize: 32, color: '#2e2a24' },
     bg: '#fbf7ef',
+    bgPattern: 'liso', // 'liso' | 'cuadros' | 'lunares' | 'rayas'
+    bgPhotoUrl: null,
     gridStyle: 'lines', // 'lines' | 'minimal'
     gridColor: '#2e2a24', // color de los números
     gridLineColor: '#c9c0aa', // color de las líneas separadoras y los días de la semana
@@ -268,11 +320,48 @@ function CalendarGrid({ monthIdx, page }) {
   );
 }
 
+// --- Fondo: si hay foto de fondo, cubre toda la página (como
+// background-size:cover); si no, color liso + patrón opcional dibujado a mano ---
+function BackgroundLayer({ page, onDeselect }) {
+  const [bgImg] = useImage(page.bgPhotoUrl || '', 'anonymous');
+
+  if (page.bgPhotoUrl && bgImg) {
+    const scale = Math.max(STAGE_W / bgImg.width, STAGE_H / bgImg.height);
+    const w = bgImg.width * scale;
+    const h = bgImg.height * scale;
+    const x = (STAGE_W - w) / 2;
+    const y = (STAGE_H - h) / 2;
+    return <KonvaImage image={bgImg} x={x} y={y} width={w} height={h} onClick={onDeselect} onTap={onDeselect} />;
+  }
+
+  const patternColor = isDark(page.bg) ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.10)';
+
+  return (
+    <React.Fragment>
+      <Rect x={0} y={0} width={STAGE_W} height={STAGE_H} fill={page.bg} onClick={onDeselect} onTap={onDeselect} />
+      {page.bgPattern !== 'liso' && (
+        <Shape
+          listening={false}
+          sceneFunc={(ctx) => {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(0, 0, STAGE_W, STAGE_H);
+            ctx.clip();
+            drawPattern(ctx, page.bgPattern, patternColor, STAGE_W, STAGE_H);
+            ctx.restore();
+          }}
+        />
+      )}
+    </React.Fragment>
+  );
+}
+
 export const App = () => {
   const [pages, setPages] = useState(() => Array.from({ length: 12 }, (_, i) => makeDefaultPage(i)));
   const [current, setCurrent] = useState(0);
   const [selected, setSelected] = useState(null); // 'photo' | null
   const fileInputRef = useRef();
+  const bgFileInputRef = useRef();
   const wrapRef = useRef();
   const [scale, setScale] = useState(1);
 
@@ -330,6 +419,14 @@ export const App = () => {
     reader.readAsDataURL(f);
     e.target.value = '';
   }
+  function handleBgFile(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => updatePageField('bgPhotoUrl', reader.result);
+    reader.readAsDataURL(f);
+    e.target.value = '';
+  }
 
   return (
     <div className="app">
@@ -369,7 +466,28 @@ export const App = () => {
           </div>
           <div className="field">
             <p className="label">Fondo de la página</p>
-            <input type="color" value={page.bg} onChange={(e) => updatePageField('bg', e.target.value)} />
+            <input type="color" value={page.bg} onChange={(e) => updatePageField('bg', e.target.value)} disabled={!!page.bgPhotoUrl} />
+            <select
+              style={{ marginTop: 8 }}
+              value={page.bgPattern}
+              onChange={(e) => updatePageField('bgPattern', e.target.value)}
+              disabled={!!page.bgPhotoUrl}
+            >
+              <option value="liso">Liso</option>
+              <option value="cuadros">Cuadros</option>
+              <option value="lunares">Lunares</option>
+              <option value="rayas">Rayas</option>
+            </select>
+            {page.bgPhotoUrl ? (
+              <button className="primary" style={{ marginTop: 8 }} onClick={() => updatePageField('bgPhotoUrl', null)}>
+                Quitar foto de fondo
+              </button>
+            ) : (
+              <button className="primary" style={{ marginTop: 8 }} onClick={() => bgFileInputRef.current.click()}>
+                Subir foto de fondo
+              </button>
+            )}
+            <input ref={bgFileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleBgFile} />
           </div>
           <div className="field">
             <p className="label">Estilo de cuadrícula</p>
@@ -407,12 +525,7 @@ export const App = () => {
             >
               <Stage width={STAGE_W} height={STAGE_H}>
                 <Layer>
-                  <Rect
-                    x={0} y={0} width={STAGE_W} height={STAGE_H}
-                    fill={page.bg}
-                    onClick={() => setSelected(null)}
-                    onTap={() => setSelected(null)}
-                  />
+                  <BackgroundLayer page={page} onDeselect={() => setSelected(null)} />
                   <PhotoNode
                     page={page}
                     imageUrl={page.photoUrl}
