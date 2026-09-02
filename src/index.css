@@ -12,9 +12,21 @@ body { font-family: system-ui, sans-serif; background: var(--paper); color: var(
 
 .app { max-width: 1100px; margin: 0 auto; padding: 18px; }
 
-.topbar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.topbar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
 .brand { font-family: Georgia, serif; font-style: italic; font-size: 21px; color: var(--accent); }
 .badge { font-size: 11px; color: var(--ink-soft); border: 1px solid var(--line); padding: 3px 8px; border-radius: 999px; }
+.save-status { font-size: 12px; color: var(--ink-soft); }
+.save-status.error { color: #a33; }
+.topbar-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.export-btn {
+  border: none; background: var(--accent); color: #fff; border-radius: 8px;
+  padding: 6px 12px; font-size: 12px; cursor: pointer;
+}
+.reset-btn {
+  border: 1px solid var(--line); background: #fff; border-radius: 8px;
+  padding: 5px 10px; font-size: 12px; color: var(--ink-soft); cursor: pointer;
+}
+.reset-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .workspace { display: flex; flex-direction: column; gap: 16px; }
 @media (min-width: 900px) {
@@ -113,3 +125,7 @@ input[type=range] { width: 100%; }
 .modal-actions { display: flex; gap: 10px; margin-top: 14px; width: 100%; }
 .modal-actions button { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: #fff; cursor: pointer; font-size: 14px; }
 .modal-actions button.primary { border: none; }
+.secondary-full {
+  width: 100%; margin-top: 10px; padding: 9px; border-radius: 8px; border: 1px solid var(--line);
+  background: #fff; cursor: pointer; font-size: 13px; color: var(--ink);
+}
