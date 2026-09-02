@@ -513,13 +513,18 @@ function CropModal({ page, img, onConfirm, onCancel }) {
 
   const [draft, setDraft] = useState(() => {
     if (p.cropW) {
-      return { cropX: p.cropX, cropY: p.cropY, cropW: p.cropW, cropH: p.cropH, baseCropW: p.baseCropW || p.cropW, baseCropH: p.baseCropH || p.cropH, zoom: p.zoom || 1 };
+      return { cropX: p.cropX, cropY: p.cropY, cropW: p.cropW, cropH: p.cropH, baseCropW: p.baseCropW || p.cropW, baseCropH: p.baseCropH || p.cropH, zoom: p.zoom || 1, shape: p.shape };
     }
     const def = computeDefaultCrop(img.width, img.height, p.width, p.height);
-    return { ...def, baseCropW: def.cropW, baseCropH: def.cropH, zoom: 1 };
+    return { ...def, baseCropW: def.cropW, baseCropH: def.cropH, zoom: 1, shape: p.shape };
   });
 
-  function handleDrag(e) {
+  // Solo se recalcula al SOLTAR, no en cada movimiento: reposicionar el nodo
+  // a mitad de un arrastre activo pelea con el seguimiento nativo de Konva y
+  // es justo lo que lo hacía sentir poco responsivo. Durante el arrastre en
+  // sí, Konva mueve la imagen libre y suave — al soltar se traduce ese
+  // desplazamiento a un recorte nuevo y se resetea la posición una sola vez.
+  function handleDragEnd(e) {
     const node = e.target;
     const scaleX = draft.cropW / previewW;
     const scaleY = draft.cropH / previewH;
@@ -548,18 +553,24 @@ function CropModal({ page, img, onConfirm, onCancel }) {
         <div className="crop-preview-wrap" style={{ width: previewW, height: previewH }}>
           <Stage width={previewW} height={previewH}>
             <Layer>
-              <Group width={previewW} height={previewH} clipFunc={clipForShape(p.shape, previewW, previewH)}>
+              <Group width={previewW} height={previewH} clipFunc={clipForShape(draft.shape, previewW, previewH)}>
                 <KonvaImage
                   image={img}
                   x={0} y={0} width={previewW} height={previewH}
                   crop={{ x: draft.cropX, y: draft.cropY, width: draft.cropW, height: draft.cropH }}
                   draggable
-                  onDragMove={handleDrag}
+                  onDragEnd={handleDragEnd}
                 />
               </Group>
             </Layer>
           </Stage>
         </div>
+        <p className="label" style={{ marginTop: 10 }}>Forma del marco</p>
+        <select value={draft.shape} onChange={(e) => setDraft({ ...draft, shape: e.target.value })}>
+          {SHAPES.map((s) => (
+            <option key={s} value={s}>{shapeLabel(s)}</option>
+          ))}
+        </select>
         <p className="label" style={{ marginTop: 10 }}>Zoom</p>
         <input type="range" min="1" max="3" step="0.05" value={draft.zoom} onChange={(e) => handleZoom(+e.target.value)} />
         <p className="hint">Arrastra la foto dentro del marco para elegir qué parte se ve.</p>
@@ -568,7 +579,7 @@ function CropModal({ page, img, onConfirm, onCancel }) {
           <button
             type="button"
             className="primary"
-            onClick={() => onConfirm({ ...p, cropX: draft.cropX, cropY: draft.cropY, cropW: draft.cropW, cropH: draft.cropH, baseCropW: draft.baseCropW, baseCropH: draft.baseCropH, zoom: draft.zoom })}
+            onClick={() => onConfirm({ ...p, shape: draft.shape, cropX: draft.cropX, cropY: draft.cropY, cropW: draft.cropW, cropH: draft.cropH, baseCropW: draft.baseCropW, baseCropH: draft.baseCropH, zoom: draft.zoom })}
           >
             Confirmar
           </button>
