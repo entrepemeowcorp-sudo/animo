@@ -76,3 +76,40 @@ input[type=range] { width: 100%; }
   border: 1px solid var(--line); background: var(--paper); border-radius: 8px;
   padding: 6px 10px; font-size: 12px; cursor: pointer; color: var(--ink);
 }
+
+.font-picker { position: relative; }
+.font-trigger {
+  width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: #fff; cursor: pointer; font-size: 14px; color: var(--ink); text-align: left;
+}
+.font-panel {
+  margin-top: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff;
+}
+.font-panel input[type=text] { margin-bottom: 8px; }
+.font-list { max-height: 220px; overflow-y: auto; }
+.font-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-soft); margin: 10px 0 4px; }
+.font-group-label:first-child { margin-top: 0; }
+.font-option {
+  display: block; width: 100%; text-align: left; padding: 7px 8px; border: none; border-radius: 6px;
+  background: transparent; font-size: 16px; color: var(--ink); cursor: pointer;
+}
+.font-option:hover { background: var(--paper); }
+.font-option.active { background: var(--accent); color: #fff; }
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(46, 42, 36, 0.55);
+  display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50;
+}
+.modal-card {
+  background: #fff; border-radius: 14px; padding: 18px; max-width: 92vw;
+  display: flex; flex-direction: column; align-items: center;
+}
+.modal-title { font-family: Georgia, serif; font-style: italic; color: var(--accent); margin: 0 0 12px; font-size: 18px; }
+.crop-preview-wrap {
+  border-radius: 8px; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,.18);
+  background: repeating-linear-gradient(45deg, #eee, #eee 8px, #ddd 8px, #ddd 16px);
+}
+.modal-card input[type=range] { width: 100%; margin-top: 4px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 14px; width: 100%; }
+.modal-actions button { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: #fff; cursor: pointer; font-size: 14px; }
+.modal-actions button.primary { border: none; }
