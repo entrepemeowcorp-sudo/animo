@@ -567,6 +567,7 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
 
   const winRef = useRef();
   const trRef = useRef();
+  const maskGroupRef = useRef();
 
   useEffect(() => {
     if (trRef.current && winRef.current) {
@@ -575,14 +576,27 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
     }
   }, []);
 
-  // Igual que en el lienzo principal: solo se traduce a estado al soltar,
-  // para que el arrastre en sí vaya suelto y sin interferencias.
+  // El recorte con destination-out borra lo que YA hay en el lienzo, y en
+  // Konva varias formas de una misma capa comparten el mismo lienzo — sin
+  // aislar esto, el hueco no solo quita la capa oscura, quita también la
+  // imagen de debajo (por eso se veían las rayas del fondo a través del
+  // corazón). cache() renderiza el rectángulo oscuro + el hueco en un
+  // lienzo propio y aislado antes de pegarlo encima de la foto, así la
+  // imagen dentro de la máscara queda intacta, tal cual.
+  useEffect(() => {
+    if (maskGroupRef.current) {
+      maskGroupRef.current.clearCache();
+      maskGroupRef.current.cache();
+      maskGroupRef.current.getLayer().batchDraw();
+    }
+  }, [draft.cropX, draft.cropY, draft.cropW, draft.cropH, draft.shape, dispW, dispH]);
+
+  // Sin límites de posición ni tamaño (solo un mínimo para que no desaparezca):
+  // los tiradores pueden moverse más allá del borde de la foto a propósito.
   function handleWinDragEnd(e) {
     const node = e.target;
-    const cropX = clamp(node.x() / displayScale, 0, Math.max(0, img.width - draft.cropW));
-    const cropY = clamp(node.y() / displayScale, 0, Math.max(0, img.height - draft.cropH));
-    node.x(cropX * displayScale);
-    node.y(cropY * displayScale);
+    const cropX = node.x() / displayScale;
+    const cropY = node.y() / displayScale;
     setDraft((d) => ({ ...d, cropX, cropY }));
   }
   // Sin keepRatio: cualquier forma se puede ensanchar o estrechar a placer,
@@ -593,15 +607,30 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
     const scaleY = node.scaleY();
     node.scaleX(1);
     node.scaleY(1);
-    const cropW = clamp((node.width() * scaleX) / displayScale, 15, img.width);
-    const cropH = clamp((node.height() * scaleY) / displayScale, 15, img.height);
-    const cropX = clamp(node.x() / displayScale, 0, Math.max(0, img.width - cropW));
-    const cropY = clamp(node.y() / displayScale, 0, Math.max(0, img.height - cropH));
+    const cropW = Math.max(15, node.width() * scaleX) / displayScale;
+    const cropH = Math.max(15, node.height() * scaleY) / displayScale;
+    const cropX = node.x() / displayScale;
+    const cropY = node.y() / displayScale;
     node.width(cropW * displayScale);
     node.height(cropH * displayScale);
-    node.x(cropX * displayScale);
-    node.y(cropY * displayScale);
     setDraft((d) => ({ ...d, cropX, cropY, cropW, cropH }));
+  }
+
+  // Al confirmar, el marco de la página adopta la MISMA proporción que el
+  // recorte que se ve aquí (conservando el área que ya tenía el marco) — así
+  // lo que se guarda es exactamente la forma y proporción del recorte, y no
+  // se vuelve a estirar la forma original a las medidas previas del marco.
+  function handleConfirm() {
+    const cropAspect = draft.cropW / draft.cropH;
+    const area = p.width * p.height;
+    const height = Math.sqrt(area / cropAspect);
+    const width = height * cropAspect;
+    onConfirm({
+      ...p,
+      shape: draft.shape,
+      cropX: draft.cropX, cropY: draft.cropY, cropW: draft.cropW, cropH: draft.cropH,
+      width, height,
+    });
   }
 
   return (
@@ -614,20 +643,22 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
               <KonvaImage image={img} x={0} y={0} width={dispW} height={dispH} listening={false} />
               {/* Capa oscura sobre toda la imagen, con un hueco recortado en la
                   forma elegida donde va el recorte — así se ve la foto entera
-                  y qué parte queda fuera, no solo el resultado final. */}
-              <Shape
-                listening={false}
-                sceneFunc={(ctx) => {
-                  ctx.save();
-                  ctx.fillStyle = 'rgba(20,18,15,0.6)';
-                  ctx.fillRect(0, 0, dispW, dispH);
-                  ctx.globalCompositeOperation = 'destination-out';
-                  ctx.translate(draft.cropX * displayScale, draft.cropY * displayScale);
-                  clipForShape(draft.shape, draft.cropW * displayScale, draft.cropH * displayScale)(ctx);
-                  ctx.fill();
-                  ctx.restore();
-                }}
-              />
+                  y qué parte queda fuera, no solo el resultado final. Todo
+                  este grupo se cachea aparte (ver el efecto de arriba) para
+                  que el recorte no borre la imagen de debajo. */}
+              <Group ref={maskGroupRef} listening={false}>
+                <Rect x={0} y={0} width={dispW} height={dispH} fill="rgba(20,18,15,0.6)" />
+                <Shape
+                  globalCompositeOperation="destination-out"
+                  sceneFunc={(ctx) => {
+                    ctx.save();
+                    ctx.translate(draft.cropX * displayScale, draft.cropY * displayScale);
+                    clipForShape(draft.shape, draft.cropW * displayScale, draft.cropH * displayScale)(ctx);
+                    ctx.fill();
+                    ctx.restore();
+                  }}
+                />
+              </Group>
               <Rect
                 ref={winRef}
                 x={draft.cropX * displayScale}
@@ -668,7 +699,7 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
           <button
             type="button"
             className="primary"
-            onClick={() => onConfirm({ ...p, shape: draft.shape, cropX: draft.cropX, cropY: draft.cropY, cropW: draft.cropW, cropH: draft.cropH })}
+            onClick={handleConfirm}
           >
             Confirmar
           </button>
