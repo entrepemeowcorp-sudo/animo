@@ -19,6 +19,27 @@ const YEAR = 2027;
 const WEEKDAYS_MON = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
 const GRID_MARGIN = 24;
 
+const STORAGE_KEY = 'calendario-editor-autosave-v1';
+
+// Guardado automático con localStorage — sin cuentas ni backend, protege
+// contra recargar la pestaña o cerrar el navegador mientras se prueba.
+// Tiene un techo real: las fotos van como base64 dentro del propio JSON, y
+// localStorage suele tener un límite de 5-10MB por sitio. En cuanto haya
+// fotos de verdad en los 12 meses puede llenarse — para eso hace falta un
+// backend con almacenamiento de archivos aparte, que es una pieza bastante
+// más grande y queda para cuando el proyecto esté más maduro.
+function loadSavedPages() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length === 12) return parsed;
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
@@ -253,9 +274,10 @@ function clipForShape(shape, w, h) {
 // El Transformer es de Konva, probado en producción — esto es justo lo que
 // fallaba a mano con CSS en el prototipo anterior (rectangular/redondeado sin
 // redimensionar).
-function PhotoNode({ page, img, selected, onSelect, onChange, onRequestUpload }) {
+function PhotoNode({ page, img, selected, onSelect, onChange, onRequestUpload, onLongPress }) {
   const groupRef = useRef();
   const trRef = useRef();
+  const longPressTimer = useRef(null);
   const hasPhoto = !!(page.photoUrl && img);
 
   useEffect(() => {
@@ -281,11 +303,28 @@ function PhotoNode({ page, img, selected, onSelect, onChange, onRequestUpload })
     });
   }
   function handleDragEnd(e) {
+    cancelLongPress();
     onChange({ ...page.photo, x: e.target.x(), y: e.target.y() });
   }
   function handleClick() {
     onSelect();
     if (!hasPhoto && onRequestUpload) onRequestUpload();
+  }
+  // Mantener pulsado sobre la foto reabre el recorte, en cualquier momento
+  // — se cancela si sueltas antes de tiempo o si el gesto se convierte en
+  // un arrastre.
+  function startLongPress() {
+    if (!hasPhoto) return;
+    cancelLongPress();
+    longPressTimer.current = setTimeout(() => {
+      if (onLongPress) onLongPress();
+    }, 550);
+  }
+  function cancelLongPress() {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
   }
 
   const w = page.photo.width;
@@ -304,6 +343,11 @@ function PhotoNode({ page, img, selected, onSelect, onChange, onRequestUpload })
         draggable
         onClick={handleClick}
         onTap={handleClick}
+        onMouseDown={startLongPress}
+        onTouchStart={startLongPress}
+        onMouseUp={cancelLongPress}
+        onTouchEnd={cancelLongPress}
+        onDragStart={cancelLongPress}
         onDragEnd={handleDragEnd}
         onTransformEnd={handleTransformEnd}
         clipFunc={hasPhoto ? clipForShape(page.photo.shape, w, h) : undefined}
@@ -504,64 +548,110 @@ function CalendarGrid({ monthIdx, page, titleFontFamily, selected, onSelect, onC
 // el marco real (reutiliza clipForShape), para ajustar con más precisión que
 // arrastrando la foto pequeña directamente sobre la página. Trabaja sobre un
 // borrador local — no toca el estado real hasta que se confirma. ---
-function CropModal({ page, img, onConfirm, onCancel }) {
+function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
   const p = page.photo;
-  const frameAspect = p.width / p.height;
-  const maxDim = 260;
-  const previewW = frameAspect >= 1 ? maxDim : maxDim * frameAspect;
-  const previewH = frameAspect >= 1 ? maxDim / frameAspect : maxDim;
+  // Se ve la imagen ENTERA, no solo el recorte — a escala "contain" dentro
+  // de un cuadro fijo, sea cual sea la proporción real de la foto.
+  const maxDim = 280;
+  const displayScale = Math.min(maxDim / img.width, maxDim / img.height);
+  const dispW = img.width * displayScale;
+  const dispH = img.height * displayScale;
 
   const [draft, setDraft] = useState(() => {
     if (p.cropW) {
-      return { cropX: p.cropX, cropY: p.cropY, cropW: p.cropW, cropH: p.cropH, baseCropW: p.baseCropW || p.cropW, baseCropH: p.baseCropH || p.cropH, zoom: p.zoom || 1, shape: p.shape };
+      return { cropX: p.cropX, cropY: p.cropY, cropW: p.cropW, cropH: p.cropH, shape: p.shape };
     }
     const def = computeDefaultCrop(img.width, img.height, p.width, p.height);
-    return { ...def, baseCropW: def.cropW, baseCropH: def.cropH, zoom: 1, shape: p.shape };
+    return { ...def, shape: p.shape };
   });
 
-  // Solo se recalcula al SOLTAR, no en cada movimiento: reposicionar el nodo
-  // a mitad de un arrastre activo pelea con el seguimiento nativo de Konva y
-  // es justo lo que lo hacía sentir poco responsivo. Durante el arrastre en
-  // sí, Konva mueve la imagen libre y suave — al soltar se traduce ese
-  // desplazamiento a un recorte nuevo y se resetea la posición una sola vez.
-  function handleDragEnd(e) {
+  const winRef = useRef();
+  const trRef = useRef();
+
+  useEffect(() => {
+    if (trRef.current && winRef.current) {
+      trRef.current.nodes([winRef.current]);
+      trRef.current.getLayer().batchDraw();
+    }
+  }, []);
+
+  // Igual que en el lienzo principal: solo se traduce a estado al soltar,
+  // para que el arrastre en sí vaya suelto y sin interferencias.
+  function handleWinDragEnd(e) {
     const node = e.target;
-    const scaleX = draft.cropW / previewW;
-    const scaleY = draft.cropH / previewH;
-    const maxX = Math.max(0, img.width - draft.cropW);
-    const maxY = Math.max(0, img.height - draft.cropH);
-    const cropX = clamp(draft.cropX - node.x() * scaleX, 0, maxX);
-    const cropY = clamp(draft.cropY - node.y() * scaleY, 0, maxY);
+    const cropX = clamp(node.x() / displayScale, 0, Math.max(0, img.width - draft.cropW));
+    const cropY = clamp(node.y() / displayScale, 0, Math.max(0, img.height - draft.cropH));
+    node.x(cropX * displayScale);
+    node.y(cropY * displayScale);
     setDraft((d) => ({ ...d, cropX, cropY }));
-    node.x(0);
-    node.y(0);
   }
-  function handleZoom(newZoom) {
-    const cropW = Math.min(img.width, draft.baseCropW / newZoom);
-    const cropH = Math.min(img.height, draft.baseCropH / newZoom);
-    const centerX = draft.cropX + draft.cropW / 2;
-    const centerY = draft.cropY + draft.cropH / 2;
-    const cropX = clamp(centerX - cropW / 2, 0, Math.max(0, img.width - cropW));
-    const cropY = clamp(centerY - cropH / 2, 0, Math.max(0, img.height - cropH));
-    setDraft({ ...draft, zoom: newZoom, cropW, cropH, cropX, cropY });
+  // Sin keepRatio: cualquier forma se puede ensanchar o estrechar a placer,
+  // tirando de las esquinas — funciona igual con ratón que con el dedo.
+  function handleWinTransformEnd() {
+    const node = winRef.current;
+    const scaleX = node.scaleX();
+    const scaleY = node.scaleY();
+    node.scaleX(1);
+    node.scaleY(1);
+    const cropW = clamp((node.width() * scaleX) / displayScale, 15, img.width);
+    const cropH = clamp((node.height() * scaleY) / displayScale, 15, img.height);
+    const cropX = clamp(node.x() / displayScale, 0, Math.max(0, img.width - cropW));
+    const cropY = clamp(node.y() / displayScale, 0, Math.max(0, img.height - cropH));
+    node.width(cropW * displayScale);
+    node.height(cropH * displayScale);
+    node.x(cropX * displayScale);
+    node.y(cropY * displayScale);
+    setDraft((d) => ({ ...d, cropX, cropY, cropW, cropH }));
   }
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <h3 className="modal-title">Ajustar recorte</h3>
-        <div className="crop-preview-wrap" style={{ width: previewW, height: previewH }}>
-          <Stage width={previewW} height={previewH}>
+        <div className="crop-preview-wrap" style={{ width: dispW, height: dispH }}>
+          <Stage width={dispW} height={dispH}>
             <Layer>
-              <Group width={previewW} height={previewH} clipFunc={clipForShape(draft.shape, previewW, previewH)}>
-                <KonvaImage
-                  image={img}
-                  x={0} y={0} width={previewW} height={previewH}
-                  crop={{ x: draft.cropX, y: draft.cropY, width: draft.cropW, height: draft.cropH }}
-                  draggable
-                  onDragEnd={handleDragEnd}
-                />
-              </Group>
+              <KonvaImage image={img} x={0} y={0} width={dispW} height={dispH} listening={false} />
+              {/* Capa oscura sobre toda la imagen, con un hueco recortado en la
+                  forma elegida donde va el recorte — así se ve la foto entera
+                  y qué parte queda fuera, no solo el resultado final. */}
+              <Shape
+                listening={false}
+                sceneFunc={(ctx) => {
+                  ctx.save();
+                  ctx.fillStyle = 'rgba(20,18,15,0.6)';
+                  ctx.fillRect(0, 0, dispW, dispH);
+                  ctx.globalCompositeOperation = 'destination-out';
+                  ctx.translate(draft.cropX * displayScale, draft.cropY * displayScale);
+                  clipForShape(draft.shape, draft.cropW * displayScale, draft.cropH * displayScale)(ctx);
+                  ctx.fill();
+                  ctx.restore();
+                }}
+              />
+              <Rect
+                ref={winRef}
+                x={draft.cropX * displayScale}
+                y={draft.cropY * displayScale}
+                width={draft.cropW * displayScale}
+                height={draft.cropH * displayScale}
+                fill="rgba(0,0,0,0.001)"
+                draggable
+                onDragEnd={handleWinDragEnd}
+                onTransformEnd={handleWinTransformEnd}
+              />
+              <Transformer
+                ref={trRef}
+                keepRatio={false}
+                rotateEnabled={false}
+                anchorSize={14}
+                anchorStroke="#6e2f44"
+                anchorFill="#fff"
+                borderStroke="#6e2f44"
+                boundBoxFunc={(oldBox, newBox) => {
+                  if (newBox.width < 15 || newBox.height < 15) return oldBox;
+                  return newBox;
+                }}
+              />
             </Layer>
           </Stage>
         </div>
@@ -571,15 +661,14 @@ function CropModal({ page, img, onConfirm, onCancel }) {
             <option key={s} value={s}>{shapeLabel(s)}</option>
           ))}
         </select>
-        <p className="label" style={{ marginTop: 10 }}>Zoom</p>
-        <input type="range" min="1" max="3" step="0.05" value={draft.zoom} onChange={(e) => handleZoom(+e.target.value)} />
-        <p className="hint">Arrastra la foto dentro del marco para elegir qué parte se ve.</p>
+        <p className="hint">Arrastra el marco para moverlo; tira de las esquinas para cambiar su tamaño o forma — funciona igual con el dedo.</p>
+        <button type="button" className="secondary-full" onClick={onRequestNewPhoto}>Cambiar foto</button>
         <div className="modal-actions">
           <button type="button" onClick={onCancel}>Cancelar</button>
           <button
             type="button"
             className="primary"
-            onClick={() => onConfirm({ ...p, shape: draft.shape, cropX: draft.cropX, cropY: draft.cropY, cropW: draft.cropW, cropH: draft.cropH, baseCropW: draft.baseCropW, baseCropH: draft.baseCropH, zoom: draft.zoom })}
+            onClick={() => onConfirm({ ...p, shape: draft.shape, cropX: draft.cropX, cropY: draft.cropY, cropW: draft.cropW, cropH: draft.cropH })}
           >
             Confirmar
           </button>
@@ -806,17 +895,110 @@ function FontPicker({ value, onChange }) {
 }
 
 export const App = () => {
-  const [pages, setPages] = useState(() => Array.from({ length: 12 }, (_, i) => makeDefaultPage(i)));
+  const [pages, setPages] = useState(() => loadSavedPages() || Array.from({ length: 12 }, (_, i) => makeDefaultPage(i)));
   const [current, setCurrent] = useState(0);
   const [selected, setSelected] = useState(null); // 'photo' | 'grid' | null
   const [showCropModal, setShowCropModal] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('idle'); // 'idle' | 'saved' | 'error'
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
+  const lastCheckpointRef = useRef(0);
   const fileInputRef = useRef();
   const bgFileInputRef = useRef();
   const wrapRef = useRef();
+  const stageRef = useRef();
+  const saveTimeoutRef = useRef(null);
   const [scale, setScale] = useState(1);
 
   const page = pages[current];
   const [img] = useImage(page.photoUrl || '', 'anonymous');
+
+  // Autoguardado con un pequeño retraso, para no escribir en cada pixel de
+  // un slider — solo cuando el usuario deja de tocar algo un momento.
+  useEffect(() => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(pages));
+        setSaveStatus('saved');
+      } catch (err) {
+        setSaveStatus('error');
+      }
+    }, 600);
+    return () => clearTimeout(saveTimeoutRef.current);
+  }, [pages]);
+
+  function handleResetAll() {
+    const ok = window.confirm('¿Borrar todo y empezar de cero? Esto no se puede deshacer.');
+    if (!ok) return;
+    try { localStorage.removeItem(STORAGE_KEY); } catch (err) { /* nada que hacer si falla */ }
+    updatePages(Array.from({ length: 12 }, (_, i) => makeDefaultPage(i)));
+    setCurrent(0);
+    setSelected(null);
+  }
+
+  // Todo cambio de contenido pasa por aquí en vez de por setPages
+  // directamente. Agrupa cambios seguidos en un solo paso de deshacer (medio
+  // segundo de margen) para que arrastrar un slider de color no genere
+  // cincuenta pasos — y solo entonces guarda el estado anterior.
+  function updatePages(updater) {
+    const next = typeof updater === 'function' ? updater(pages) : updater;
+    const now = Date.now();
+    if (now - lastCheckpointRef.current > 700) {
+      setUndoStack((stack) => [...stack.slice(-49), pages]);
+      setRedoStack([]);
+      lastCheckpointRef.current = now;
+    }
+    setPages(next);
+  }
+  function handleUndo() {
+    if (undoStack.length === 0) return;
+    const prev = undoStack[undoStack.length - 1];
+    setUndoStack((stack) => stack.slice(0, -1));
+    setRedoStack((stack) => [...stack, pages]);
+    setPages(prev);
+    lastCheckpointRef.current = 0; // el próximo cambio siempre abre un paso nuevo
+  }
+  function handleRedo() {
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    setRedoStack((stack) => stack.slice(0, -1));
+    setUndoStack((stack) => [...stack, pages]);
+    setPages(next);
+    lastCheckpointRef.current = 0;
+  }
+
+  // Atajos de teclado — útiles cuando esto se prueba desde un ordenador.
+  // Se ignoran mientras se escribe en un campo de texto, para no robarle el
+  // deshacer nativo del propio campo.
+  useEffect(() => {
+    function onKeyDown(e) {
+      const tag = document.activeElement && document.activeElement.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const cmd = e.ctrlKey || e.metaKey;
+      if (!cmd) return;
+      if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); }
+      else if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) { e.preventDefault(); handleRedo(); }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
+
+  // Deselecciona primero para que los tiradores de la foto/cuadrícula no
+  // salgan en la imagen, y espera dos frames a que React y Konva terminen de
+  // redibujar antes de leer el canvas — si no, a veces se captura a medias.
+  function handleExportPage() {
+    setSelected(null);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const uri = stageRef.current.toDataURL({ pixelRatio: 2 });
+        const link = document.createElement('a');
+        link.download = `calendario-${MONTHS[current]}.png`;
+        link.href = uri;
+        link.click();
+      });
+    });
+  }
 
   // Escala el escenario de tamaño fijo (630x443) al ancho real disponible,
   // para que se vea bien tanto en el móvil como en pantalla grande.
@@ -839,21 +1021,21 @@ export const App = () => {
   useEffect(() => {
     if (img && page.photoUrl && !page.photo.cropW) {
       const def = computeDefaultCrop(img.width, img.height, page.photo.width, page.photo.height);
-      updatePagePhoto({ ...page.photo, ...def, baseCropW: def.cropW, baseCropH: def.cropH, zoom: 1 });
+      updatePagePhoto({ ...page.photo, ...def });
       setShowCropModal(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [img, page.photoUrl]);
 
   function updatePagePhoto(nextPhoto) {
-    setPages((prev) => {
+    updatePages((prev) => {
       const copy = [...prev];
       copy[current] = { ...copy[current], photo: nextPhoto };
       return copy;
     });
   }
   function updatePageField(field, value) {
-    setPages((prev) => {
+    updatePages((prev) => {
       const copy = [...prev];
       copy[current] = { ...copy[current], [field]: value };
       return copy;
@@ -867,10 +1049,10 @@ export const App = () => {
       // hasta el siguiente redibujado. document.fonts.load() lo evita.
       const family = fontFamilyFor(value).split(',')[0].replace(/'/g, '');
       document.fonts.load(`16px "${family}"`).then(() => {
-        setPages((prev) => [...prev]); // fuerza un redibujado una vez cargada de verdad
+        setPages((prev) => [...prev]); // fuerza un redibujado, no un cambio real: se queda fuera del historial
       }).catch(() => {});
     }
-    setPages((prev) => {
+    updatePages((prev) => {
       const copy = [...prev];
       copy[current] = { ...copy[current], title: { ...copy[current].title, [field]: value } };
       return copy;
@@ -879,7 +1061,7 @@ export const App = () => {
   function handleTitleDragEnd(e) {
     const x = e.target.x();
     const y = e.target.y();
-    setPages((prev) => {
+    updatePages((prev) => {
       const copy = [...prev];
       copy[current] = { ...copy[current], title: { ...copy[current].title, x, y } };
       return copy;
@@ -892,7 +1074,7 @@ export const App = () => {
     reader.onload = () => {
       // Se limpia el recorte guardado: es del archivo anterior, no vale para
       // el nuevo — el efecto de arriba calculará uno nuevo en cuanto cargue.
-      updatePagePhoto({ ...page.photo, cropX: undefined, cropY: undefined, cropW: undefined, cropH: undefined, baseCropW: undefined, baseCropH: undefined, zoom: 1 });
+      updatePagePhoto({ ...page.photo, cropX: undefined, cropY: undefined, cropW: undefined, cropH: undefined });
       updatePageField('photoUrl', reader.result);
     };
     reader.readAsDataURL(f);
@@ -912,6 +1094,15 @@ export const App = () => {
       <div className="topbar">
         <span className="brand">Editor de calendarios</span>
         <span className="badge">Konva · sin coste</span>
+        <span className={'save-status' + (saveStatus === 'error' ? ' error' : '')}>
+          {saveStatus === 'error' ? 'No se pudo guardar todo (demasiadas fotos para el navegador)' : saveStatus === 'saved' ? 'Guardado' : ''}
+        </span>
+        <div className="topbar-actions">
+          <button type="button" className="reset-btn" disabled={undoStack.length === 0} onClick={handleUndo} title="Deshacer (Ctrl+Z)">↶ Deshacer</button>
+          <button type="button" className="reset-btn" disabled={redoStack.length === 0} onClick={handleRedo} title="Rehacer (Ctrl+Y)">↷ Rehacer</button>
+          <button type="button" className="export-btn" onClick={handleExportPage}>Descargar esta página</button>
+          <button type="button" className="reset-btn" onClick={handleResetAll}>Empezar de cero</button>
+        </div>
       </div>
 
       <div className="workspace">
@@ -1028,7 +1219,7 @@ export const App = () => {
                 overflow: 'hidden',
               }}
             >
-              <Stage width={STAGE_W} height={STAGE_H}>
+              <Stage ref={stageRef} width={STAGE_W} height={STAGE_H}>
                 <Layer>
                   <BackgroundLayer page={page} onDeselect={() => setSelected(null)} />
                   <PhotoNode
@@ -1038,6 +1229,7 @@ export const App = () => {
                     onSelect={() => setSelected('photo')}
                     onChange={updatePagePhoto}
                     onRequestUpload={() => fileInputRef.current.click()}
+                    onLongPress={() => setShowCropModal(true)}
                   />
                   {page.photo.shape === 'postit' && (
                     // Tira de washi tape decorativa — un elemento normal más,
@@ -1097,6 +1289,7 @@ export const App = () => {
           img={img}
           onCancel={() => setShowCropModal(false)}
           onConfirm={(nextPhoto) => { updatePagePhoto(nextPhoto); setShowCropModal(false); }}
+          onRequestNewPhoto={() => { setShowCropModal(false); fileInputRef.current.click(); }}
         />
       )}
     </div>
