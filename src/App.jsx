@@ -551,11 +551,17 @@ function CalendarGrid({ monthIdx, page, titleFontFamily, selected, onSelect, onC
 function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
   const p = page.photo;
   // Se ve la imagen ENTERA, no solo el recorte — a escala "contain" dentro
-  // de un cuadro fijo, sea cual sea la proporción real de la foto.
-  const maxDim = 280;
+  // de un cuadro fijo, sea cual sea la proporción real de la foto. El
+  // lienzo es más grande que la propia imagen (MARGIN alrededor) para que
+  // los tiradores se puedan sacar fuera de la foto y se sigan viendo — un
+  // escenario Konva recorta todo lo que quede fuera de su propio tamaño.
+  const maxDim = 260;
+  const MARGIN = 36;
   const displayScale = Math.min(maxDim / img.width, maxDim / img.height);
   const dispW = img.width * displayScale;
   const dispH = img.height * displayScale;
+  const stageW = dispW + MARGIN * 2;
+  const stageH = dispH + MARGIN * 2;
 
   const [draft, setDraft] = useState(() => {
     if (p.cropW) {
@@ -589,14 +595,15 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
       maskGroupRef.current.cache();
       maskGroupRef.current.getLayer().batchDraw();
     }
-  }, [draft.cropX, draft.cropY, draft.cropW, draft.cropH, draft.shape, dispW, dispH]);
+  }, [draft.cropX, draft.cropY, draft.cropW, draft.cropH, draft.shape, stageW, stageH]);
 
   // Sin límites de posición ni tamaño (solo un mínimo para que no desaparezca):
   // los tiradores pueden moverse más allá del borde de la foto a propósito.
+  // Se resta MARGIN para volver a coordenadas de píxel de la imagen real.
   function handleWinDragEnd(e) {
     const node = e.target;
-    const cropX = node.x() / displayScale;
-    const cropY = node.y() / displayScale;
+    const cropX = (node.x() - MARGIN) / displayScale;
+    const cropY = (node.y() - MARGIN) / displayScale;
     setDraft((d) => ({ ...d, cropX, cropY }));
   }
   // Sin keepRatio: cualquier forma se puede ensanchar o estrechar a placer,
@@ -609,8 +616,8 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
     node.scaleY(1);
     const cropW = Math.max(15, node.width() * scaleX) / displayScale;
     const cropH = Math.max(15, node.height() * scaleY) / displayScale;
-    const cropX = node.x() / displayScale;
-    const cropY = node.y() / displayScale;
+    const cropX = (node.x() - MARGIN) / displayScale;
+    const cropY = (node.y() - MARGIN) / displayScale;
     node.width(cropW * displayScale);
     node.height(cropH * displayScale);
     setDraft((d) => ({ ...d, cropX, cropY, cropW, cropH }));
@@ -637,22 +644,23 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <h3 className="modal-title">Ajustar recorte</h3>
-        <div className="crop-preview-wrap" style={{ width: dispW, height: dispH }}>
-          <Stage width={dispW} height={dispH}>
+        <div className="crop-preview-wrap" style={{ width: stageW, height: stageH }}>
+          <Stage width={stageW} height={stageH}>
             <Layer>
-              <KonvaImage image={img} x={0} y={0} width={dispW} height={dispH} listening={false} />
-              {/* Capa oscura sobre toda la imagen, con un hueco recortado en la
-                  forma elegida donde va el recorte — así se ve la foto entera
-                  y qué parte queda fuera, no solo el resultado final. Todo
-                  este grupo se cachea aparte (ver el efecto de arriba) para
-                  que el recorte no borre la imagen de debajo. */}
+              <KonvaImage image={img} x={MARGIN} y={MARGIN} width={dispW} height={dispH} listening={false} />
+              {/* Capa oscura sobre todo el lienzo (imagen + margen), con un
+                  hueco recortado en la forma elegida donde va el recorte —
+                  así se ve la foto entera y qué parte queda fuera, no solo
+                  el resultado final. Todo este grupo se cachea aparte (ver
+                  el efecto de arriba) para que el recorte no borre la
+                  imagen de debajo. */}
               <Group ref={maskGroupRef} listening={false}>
-                <Rect x={0} y={0} width={dispW} height={dispH} fill="rgba(20,18,15,0.6)" />
+                <Rect x={0} y={0} width={stageW} height={stageH} fill="rgba(20,18,15,0.6)" />
                 <Shape
                   globalCompositeOperation="destination-out"
                   sceneFunc={(ctx) => {
                     ctx.save();
-                    ctx.translate(draft.cropX * displayScale, draft.cropY * displayScale);
+                    ctx.translate(MARGIN + draft.cropX * displayScale, MARGIN + draft.cropY * displayScale);
                     clipForShape(draft.shape, draft.cropW * displayScale, draft.cropH * displayScale)(ctx);
                     ctx.fill();
                     ctx.restore();
@@ -661,8 +669,8 @@ function CropModal({ page, img, onConfirm, onCancel, onRequestNewPhoto }) {
               </Group>
               <Rect
                 ref={winRef}
-                x={draft.cropX * displayScale}
-                y={draft.cropY * displayScale}
+                x={MARGIN + draft.cropX * displayScale}
+                y={MARGIN + draft.cropY * displayScale}
                 width={draft.cropW * displayScale}
                 height={draft.cropH * displayScale}
                 fill="rgba(0,0,0,0.001)"
@@ -1145,14 +1153,6 @@ export const App = () => {
             </button>
             <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
           </div>
-          <div className="field">
-            <p className="label">Forma del marco</p>
-            <select value={page.photo.shape} onChange={(e) => updatePagePhoto({ ...page.photo, shape: e.target.value })}>
-              {SHAPES.map((s) => (
-                <option key={s} value={s}>{shapeLabel(s)}</option>
-              ))}
-            </select>
-          </div>
           {page.photoUrl && (
             <div className="field">
               <button
@@ -1160,7 +1160,7 @@ export const App = () => {
                 style={{ width: '100%', padding: '9px 10px', border: '1px solid var(--line)', borderRadius: 8, background: '#fff', cursor: 'pointer' }}
                 onClick={() => setShowCropModal(true)}
               >
-                Recortar foto
+                Recortar y elegir forma
               </button>
             </div>
           )}
