@@ -19,6 +19,27 @@ const YEAR = 2027;
 const WEEKDAYS_MON = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
 const GRID_MARGIN = 24;
 
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+// Recorte por defecto al subir una foto: la mayor región posible de la
+// imagen que cubre el marco sin deformarlo, centrada — pero a partir de ahí
+// queda guardada como estado normal, no se vuelve a recalcular sola.
+function computeDefaultCrop(imgW, imgH, frameW, frameH) {
+  const frameAspect = frameW / frameH;
+  const imgAspect = imgW / imgH;
+  let cropW, cropH;
+  if (imgAspect > frameAspect) {
+    cropH = imgH;
+    cropW = cropH * frameAspect;
+  } else {
+    cropW = imgW;
+    cropH = cropW / frameAspect;
+  }
+  return { cropX: (imgW - cropW) / 2, cropY: (imgH - cropH) / 2, cropW, cropH };
+}
+
 function isDark(hex) {
   const c = hex.replace('#', '');
   const r = parseInt(c.substring(0, 2), 16), g = parseInt(c.substring(2, 4), 16), b = parseInt(c.substring(4, 6), 16);
@@ -132,6 +153,7 @@ function makeDefaultPage(i) {
     bgPattern: 'liso', // 'liso' | 'cuadros' | 'lunares' | 'rayas'
     bgPhotoUrl: null,
     gridStyle: 'lines', // 'lines' | 'minimal' | 'boxed' | 'dots' | 'circles' | 'cards'
+    gridBox: null, // null = posición automática; si no, {x,y,width,height} puestos a mano
     gridColor: '#2e2a24', // color de los números
     gridLineColor: '#c9c0aa', // color de las líneas separadoras y los días de la semana
   };
@@ -231,11 +253,10 @@ function clipForShape(shape, w, h) {
 // El Transformer es de Konva, probado en producción — esto es justo lo que
 // fallaba a mano con CSS en el prototipo anterior (rectangular/redondeado sin
 // redimensionar).
-function PhotoNode({ page, imageUrl, selected, onSelect, onChange, onRequestUpload }) {
-  const [img] = useImage(imageUrl || '', 'anonymous');
+function PhotoNode({ page, img, selected, onSelect, onChange, onRequestUpload }) {
   const groupRef = useRef();
   const trRef = useRef();
-  const hasPhoto = !!(imageUrl && img);
+  const hasPhoto = !!(page.photoUrl && img);
 
   useEffect(() => {
     if (selected && trRef.current && groupRef.current) {
@@ -269,17 +290,7 @@ function PhotoNode({ page, imageUrl, selected, onSelect, onChange, onRequestUplo
 
   const w = page.photo.width;
   const h = page.photo.height;
-
-  // Encaja la imagen en modo "cubrir" (como object-fit: cover) dentro del
-  // grupo, y el propio recorte del grupo se encarga de cortar lo que sobre
-  // — así la foto no se estira ni se deforma, se recorta.
-  let imgProps = null;
-  if (hasPhoto) {
-    const coverScale = Math.max(w / img.width, h / img.height);
-    const iw = img.width * coverScale;
-    const ih = img.height * coverScale;
-    imgProps = { x: (w - iw) / 2, y: (h - ih) / 2, width: iw, height: ih };
-  }
+  const hasCrop = hasPhoto && page.photo.cropW;
 
   return (
     <React.Fragment>
@@ -298,7 +309,11 @@ function PhotoNode({ page, imageUrl, selected, onSelect, onChange, onRequestUplo
         clipFunc={hasPhoto ? clipForShape(page.photo.shape, w, h) : undefined}
       >
         {hasPhoto ? (
-          <KonvaImage image={img} x={imgProps.x} y={imgProps.y} width={imgProps.width} height={imgProps.height} />
+          <KonvaImage
+            image={img}
+            x={0} y={0} width={w} height={h}
+            crop={hasCrop ? { x: page.photo.cropX, y: page.photo.cropY, width: page.photo.cropW, height: page.photo.cropH } : undefined}
+          />
         ) : (
           // Placeholder: se puede mover y colocar ANTES de subir foto, como pedisteis.
           <Rect x={0} y={0} width={w} height={h} fill="#ded6c2" dash={[8, 6]} stroke="#b7ac93" />
@@ -320,15 +335,44 @@ function PhotoNode({ page, imageUrl, selected, onSelect, onChange, onRequestUplo
 
 // --- Cuadrícula de días: centrada de verdad, con su tamaño recalculado según
 // el hueco libre real (computeGridLayout) y varios estilos ---
-function CalendarGrid({ monthIdx, page, titleFontFamily }) {
-  const layout = computeGridLayout(page, titleFontFamily);
+function CalendarGrid({ monthIdx, page, titleFontFamily, selected, onSelect, onChange }) {
+  // Si el usuario ya movió o redimensionó la cuadrícula a mano (page.gridBox),
+  // se usa eso. Si no, se sigue calculando sola con computeGridLayout.
+  const layout = page.gridBox || computeGridLayout(page, titleFontFamily);
+  const groupRef = useRef();
+  const trRef = useRef();
+
+  useEffect(() => {
+    if (selected && trRef.current && groupRef.current) {
+      trRef.current.nodes([groupRef.current]);
+      trRef.current.getLayer().batchDraw();
+    }
+  }, [selected]);
+
+  function handleDragEnd(e) {
+    onChange({ x: e.target.x(), y: e.target.y(), width: layout.width, height: layout.height });
+  }
+  function handleTransformEnd() {
+    const node = groupRef.current;
+    const scaleX = node.scaleX();
+    const scaleY = node.scaleY();
+    node.scaleX(1);
+    node.scaleY(1);
+    onChange({
+      x: node.x(),
+      y: node.y(),
+      width: Math.max(90, node.width() * scaleX),
+      height: Math.max(50, node.height() * scaleY),
+    });
+  }
+
   const { firstWeekday, numDays } = daysInfo(monthIdx);
   const cols = 7;
   const totalCells = firstWeekday + numDays;
   const rows = Math.ceil(totalCells / cols);
   const colW = layout.width / cols;
   const headerH = Math.min(18, layout.height * 0.15);
-  const bodyTop = layout.top + headerH;
+  const bodyTop = headerH; // coordenadas locales al grupo: el propio grupo ya lleva el x/y
   const bodyHeight = layout.height - headerH;
   const rowH = bodyHeight / rows;
   const style = page.gridStyle;
@@ -337,8 +381,8 @@ function CalendarGrid({ monthIdx, page, titleFontFamily }) {
     <KonvaText
       key={'wd' + i}
       text={wd}
-      x={layout.left + i * colW}
-      y={layout.top}
+      x={i * colW}
+      y={0}
       width={colW}
       align="center"
       fontSize={Math.max(8, headerH * 0.7)}
@@ -352,7 +396,7 @@ function CalendarGrid({ monthIdx, page, titleFontFamily }) {
     const cellIndex = firstWeekday + d - 1;
     const row = Math.floor(cellIndex / cols);
     const col = cellIndex % cols;
-    const cellX = layout.left + col * colW;
+    const cellX = col * colW;
     const cellY = bodyTop + row * rowH;
     const cellCenterX = cellX + colW / 2;
     const cellCenterY = cellY + rowH / 2;
@@ -361,12 +405,11 @@ function CalendarGrid({ monthIdx, page, titleFontFamily }) {
     if (style === 'circles') {
       const radius = Math.min(colW, rowH) * 0.32;
       badges.push(
-        <React.Fragment key={'badge' + d}>
-          <Rect
-            x={cellCenterX - radius} y={cellCenterY - radius} width={radius * 2} height={radius * 2}
-            cornerRadius={radius} stroke={page.gridLineColor} strokeWidth={1}
-          />
-        </React.Fragment>
+        <Rect
+          key={'badge' + d}
+          x={cellCenterX - radius} y={cellCenterY - radius} width={radius * 2} height={radius * 2}
+          cornerRadius={radius} stroke={page.gridLineColor} strokeWidth={1}
+        />
       );
     }
     if (style === 'cards') {
@@ -399,7 +442,7 @@ function CalendarGrid({ monthIdx, page, titleFontFamily }) {
       separators.push(
         <Line
           key={'ln' + r}
-          points={[layout.left, bodyTop + r * rowH, layout.left + layout.width, bodyTop + r * rowH]}
+          points={[0, bodyTop + r * rowH, layout.width, bodyTop + r * rowH]}
           stroke={page.gridLineColor}
           strokeWidth={1}
           dash={style === 'dots' ? [1, 5] : undefined}
@@ -410,28 +453,131 @@ function CalendarGrid({ monthIdx, page, titleFontFamily }) {
   if (style === 'boxed') {
     for (let r = 1; r < rows; r++) {
       separators.push(
-        <Line key={'hln' + r} points={[layout.left, bodyTop + r * rowH, layout.left + layout.width, bodyTop + r * rowH]} stroke={page.gridLineColor} strokeWidth={1} />
+        <Line key={'hln' + r} points={[0, bodyTop + r * rowH, layout.width, bodyTop + r * rowH]} stroke={page.gridLineColor} strokeWidth={1} />
       );
     }
     for (let c = 1; c < cols; c++) {
       separators.push(
-        <Line key={'vln' + c} points={[layout.left + c * colW, bodyTop, layout.left + c * colW, bodyTop + bodyHeight]} stroke={page.gridLineColor} strokeWidth={1} />
+        <Line key={'vln' + c} points={[c * colW, bodyTop, c * colW, bodyTop + bodyHeight]} stroke={page.gridLineColor} strokeWidth={1} />
       );
     }
   }
 
   return (
     <React.Fragment>
-      {badges}
-      {separators}
-      {weekdayLabels}
-      {dayNumbers}
+      <Group
+        ref={groupRef}
+        x={layout.left}
+        y={layout.top}
+        width={layout.width}
+        height={layout.height}
+        draggable
+        onClick={onSelect}
+        onTap={onSelect}
+        onDragEnd={handleDragEnd}
+        onTransformEnd={handleTransformEnd}
+      >
+        {/* rectángulo invisible para poder tocar/arrastrar también en los huecos vacíos entre números */}
+        <Rect x={0} y={0} width={layout.width} height={layout.height} fill="transparent" />
+        {badges}
+        {separators}
+        {weekdayLabels}
+        {dayNumbers}
+      </Group>
+      {selected && (
+        <Transformer
+          ref={trRef}
+          rotateEnabled={false}
+          boundBoxFunc={(oldBox, newBox) => {
+            if (newBox.width < 90 || newBox.height < 50) return oldBox;
+            return newBox;
+          }}
+        />
+      )}
     </React.Fragment>
   );
 }
 
 // --- Fondo: si hay foto de fondo, cubre toda la página (como
 // background-size:cover); si no, color liso + patrón opcional dibujado a mano ---
+// --- Ventana de recorte: vista ampliada, con la MISMA máscara de forma que
+// el marco real (reutiliza clipForShape), para ajustar con más precisión que
+// arrastrando la foto pequeña directamente sobre la página. Trabaja sobre un
+// borrador local — no toca el estado real hasta que se confirma. ---
+function CropModal({ page, img, onConfirm, onCancel }) {
+  const p = page.photo;
+  const frameAspect = p.width / p.height;
+  const maxDim = 260;
+  const previewW = frameAspect >= 1 ? maxDim : maxDim * frameAspect;
+  const previewH = frameAspect >= 1 ? maxDim / frameAspect : maxDim;
+
+  const [draft, setDraft] = useState(() => {
+    if (p.cropW) {
+      return { cropX: p.cropX, cropY: p.cropY, cropW: p.cropW, cropH: p.cropH, baseCropW: p.baseCropW || p.cropW, baseCropH: p.baseCropH || p.cropH, zoom: p.zoom || 1 };
+    }
+    const def = computeDefaultCrop(img.width, img.height, p.width, p.height);
+    return { ...def, baseCropW: def.cropW, baseCropH: def.cropH, zoom: 1 };
+  });
+
+  function handleDrag(e) {
+    const node = e.target;
+    const scaleX = draft.cropW / previewW;
+    const scaleY = draft.cropH / previewH;
+    const maxX = Math.max(0, img.width - draft.cropW);
+    const maxY = Math.max(0, img.height - draft.cropH);
+    const cropX = clamp(draft.cropX - node.x() * scaleX, 0, maxX);
+    const cropY = clamp(draft.cropY - node.y() * scaleY, 0, maxY);
+    setDraft((d) => ({ ...d, cropX, cropY }));
+    node.x(0);
+    node.y(0);
+  }
+  function handleZoom(newZoom) {
+    const cropW = Math.min(img.width, draft.baseCropW / newZoom);
+    const cropH = Math.min(img.height, draft.baseCropH / newZoom);
+    const centerX = draft.cropX + draft.cropW / 2;
+    const centerY = draft.cropY + draft.cropH / 2;
+    const cropX = clamp(centerX - cropW / 2, 0, Math.max(0, img.width - cropW));
+    const cropY = clamp(centerY - cropH / 2, 0, Math.max(0, img.height - cropH));
+    setDraft({ ...draft, zoom: newZoom, cropW, cropH, cropX, cropY });
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <h3 className="modal-title">Ajustar recorte</h3>
+        <div className="crop-preview-wrap" style={{ width: previewW, height: previewH }}>
+          <Stage width={previewW} height={previewH}>
+            <Layer>
+              <Group width={previewW} height={previewH} clipFunc={clipForShape(p.shape, previewW, previewH)}>
+                <KonvaImage
+                  image={img}
+                  x={0} y={0} width={previewW} height={previewH}
+                  crop={{ x: draft.cropX, y: draft.cropY, width: draft.cropW, height: draft.cropH }}
+                  draggable
+                  onDragMove={handleDrag}
+                />
+              </Group>
+            </Layer>
+          </Stage>
+        </div>
+        <p className="label" style={{ marginTop: 10 }}>Zoom</p>
+        <input type="range" min="1" max="3" step="0.05" value={draft.zoom} onChange={(e) => handleZoom(+e.target.value)} />
+        <p className="hint">Arrastra la foto dentro del marco para elegir qué parte se ve.</p>
+        <div className="modal-actions">
+          <button type="button" onClick={onCancel}>Cancelar</button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => onConfirm({ ...p, cropX: draft.cropX, cropY: draft.cropY, cropW: draft.cropW, cropH: draft.cropH, baseCropW: draft.baseCropW, baseCropH: draft.baseCropH, zoom: draft.zoom })}
+          >
+            Confirmar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BackgroundLayer({ page, onDeselect }) {
   const [bgImg] = useImage(page.bgPhotoUrl || '', 'anonymous');
 
@@ -597,7 +743,9 @@ function fontFamilyFor(id) {
 // Selector de fuente con buscador — con ~35 opciones un <select> plano ya
 // cuesta de recorrer, así que se puede filtrar escribiendo.
 function FontPicker({ value, onChange }) {
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const current = FONTS.find((f) => f.id === value);
   const q = query.trim().toLowerCase();
   const filtered = q ? FONTS.filter((f) => f.label.toLowerCase().includes(q) || f.group.toLowerCase().includes(q)) : FONTS;
   const groups = [];
@@ -608,23 +756,40 @@ function FontPicker({ value, onChange }) {
   });
 
   return (
-    <div>
-      <input
-        type="text"
-        placeholder="Buscar tipografía…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        style={{ marginBottom: 6 }}
-      />
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {groups.map((g) => (
-          <optgroup key={g} label={g}>
-            {seen[g].map((f) => (
-              <option key={f.id} value={f.id} style={{ fontFamily: f.family }}>{f.label}</option>
+    <div className="font-picker">
+      <button type="button" className="font-trigger" onClick={() => setOpen((o) => !o)}>
+        <span style={{ fontFamily: current ? current.family : undefined }}>
+          {current ? current.label : 'Elegir tipografía'}
+        </span>
+      </button>
+      {open && (
+        <div className="font-panel">
+          <input
+            type="text"
+            placeholder="Buscar tipografía…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="font-list">
+            {groups.map((g) => (
+              <div key={g}>
+                <p className="font-group-label">{g}</p>
+                {seen[g].map((f) => (
+                  <button
+                    type="button"
+                    key={f.id}
+                    className={'font-option' + (f.id === value ? ' active' : '')}
+                    style={{ fontFamily: f.family }}
+                    onClick={() => { onChange(f.id); setOpen(false); setQuery(''); }}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
             ))}
-          </optgroup>
-        ))}
-      </select>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -632,13 +797,15 @@ function FontPicker({ value, onChange }) {
 export const App = () => {
   const [pages, setPages] = useState(() => Array.from({ length: 12 }, (_, i) => makeDefaultPage(i)));
   const [current, setCurrent] = useState(0);
-  const [selected, setSelected] = useState(null); // 'photo' | null
+  const [selected, setSelected] = useState(null); // 'photo' | 'grid' | null
+  const [showCropModal, setShowCropModal] = useState(false);
   const fileInputRef = useRef();
   const bgFileInputRef = useRef();
   const wrapRef = useRef();
   const [scale, setScale] = useState(1);
 
   const page = pages[current];
+  const [img] = useImage(page.photoUrl || '', 'anonymous');
 
   // Escala el escenario de tamaño fijo (630x443) al ancho real disponible,
   // para que se vea bien tanto en el móvil como en pantalla grande.
@@ -653,6 +820,19 @@ export const App = () => {
     if (wrapRef.current) ro.observe(wrapRef.current);
     return () => ro.disconnect();
   }, []);
+
+  // Calcula el recorte inicial UNA sola vez, la primera vez que una foto
+  // termina de cargar y todavía no tiene recorte guardado. A partir de ahí
+  // es estado normal: no se vuelve a recentrar sola. De paso abre la
+  // ventana de recorte, como al "precortar" al subir la foto.
+  useEffect(() => {
+    if (img && page.photoUrl && !page.photo.cropW) {
+      const def = computeDefaultCrop(img.width, img.height, page.photo.width, page.photo.height);
+      updatePagePhoto({ ...page.photo, ...def, baseCropW: def.cropW, baseCropH: def.cropH, zoom: 1 });
+      setShowCropModal(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [img, page.photoUrl]);
 
   function updatePagePhoto(nextPhoto) {
     setPages((prev) => {
@@ -698,7 +878,12 @@ export const App = () => {
     const f = e.target.files[0];
     if (!f) return;
     const reader = new FileReader();
-    reader.onload = () => updatePageField('photoUrl', reader.result);
+    reader.onload = () => {
+      // Se limpia el recorte guardado: es del archivo anterior, no vale para
+      // el nuevo — el efecto de arriba calculará uno nuevo en cuanto cargue.
+      updatePagePhoto({ ...page.photo, cropX: undefined, cropY: undefined, cropW: undefined, cropH: undefined, baseCropW: undefined, baseCropH: undefined, zoom: 1 });
+      updatePageField('photoUrl', reader.result);
+    };
     reader.readAsDataURL(f);
     e.target.value = '';
   }
@@ -735,6 +920,17 @@ export const App = () => {
               ))}
             </select>
           </div>
+          {page.photoUrl && (
+            <div className="field">
+              <button
+                type="button"
+                style={{ width: '100%', padding: '9px 10px', border: '1px solid var(--line)', borderRadius: 8, background: '#fff', cursor: 'pointer' }}
+                onClick={() => setShowCropModal(true)}
+              >
+                Recortar foto
+              </button>
+            </div>
+          )}
           <div className="field">
             <p className="label">Título del mes</p>
             <input type="text" value={page.title.text} onChange={(e) => updateTitleField('text', e.target.value)} />
@@ -791,9 +987,20 @@ export const App = () => {
           <div className="field">
             <ColorPicker label="Color de las líneas" value={page.gridLineColor} onChange={(c) => updatePageField('gridLineColor', c)} />
           </div>
+          {page.gridBox && (
+            <div className="field">
+              <button
+                type="button"
+                style={{ width: '100%', padding: '9px 10px', border: '1px solid var(--line)', borderRadius: 8, background: '#fff', cursor: 'pointer' }}
+                onClick={() => updatePageField('gridBox', null)}
+              >
+                Posición automática de la cuadrícula
+              </button>
+            </div>
+          )}
           <p className="hint">
-            Toca la foto o el título para seleccionarlos. Arrastra para mover; con la foto
-            seleccionada, usa las esquinas para redimensionar o girar.
+            Toca la foto, el título o la cuadrícula para seleccionarlos. Arrastra para mover;
+            con la foto o la cuadrícula seleccionada, usa las esquinas para redimensionar.
           </p>
         </aside>
 
@@ -815,7 +1022,7 @@ export const App = () => {
                   <BackgroundLayer page={page} onDeselect={() => setSelected(null)} />
                   <PhotoNode
                     page={page}
-                    imageUrl={page.photoUrl}
+                    img={img}
                     selected={selected === 'photo'}
                     onSelect={() => setSelected('photo')}
                     onChange={updatePagePhoto}
@@ -846,7 +1053,14 @@ export const App = () => {
                     draggable
                     onDragEnd={handleTitleDragEnd}
                   />
-                  <CalendarGrid monthIdx={current} page={page} titleFontFamily={fontFamilyFor(page.title.font)} />
+                  <CalendarGrid
+                    monthIdx={current}
+                    page={page}
+                    titleFontFamily={fontFamilyFor(page.title.font)}
+                    selected={selected === 'grid'}
+                    onSelect={() => setSelected('grid')}
+                    onChange={(box) => updatePageField('gridBox', box)}
+                  />
                 </Layer>
               </Stage>
             </div>
@@ -859,12 +1073,21 @@ export const App = () => {
           <button
             key={m}
             className={'month-tab' + (i === current ? ' active' : '')}
-            onClick={() => { setCurrent(i); setSelected(null); }}
+            onClick={() => { setCurrent(i); setSelected(null); setShowCropModal(false); }}
           >
             {m.slice(0, 3)}
           </button>
         ))}
       </div>
+
+      {showCropModal && img && (
+        <CropModal
+          page={page}
+          img={img}
+          onCancel={() => setShowCropModal(false)}
+          onConfirm={(nextPhoto) => { updatePagePhoto(nextPhoto); setShowCropModal(false); }}
+        />
+      )}
     </div>
   );
 };
